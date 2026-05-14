@@ -1,13 +1,21 @@
-import { linspace, MIN_DTE_DAYS, toYears } from './math'
+import { linspace, MIN_DTE_DAYS } from './math'
 import { evaluateStrategy, selectMetricValue } from './strategy'
+import {
+  DEFAULT_VOL_MODEL,
+  hasMultipleExpiries,
+  logMoneyness,
+  maxDteDays,
+  referenceStrike,
+} from './volatility'
 import type {
   AxisMode,
   DisplayMode,
   GreekMetric,
   MarketParams,
-  OptionLeg,
   StrategyLeg,
   SurfaceGrid,
+  TimeAxisKind,
+  VolModel,
   XAxisMode,
 } from './types'
 
@@ -16,19 +24,11 @@ export interface GridConfig {
   xAxisMode: XAxisMode
   metric: GreekMetric
   displayMode: DisplayMode
+  volModel?: VolModel
+  timeAxisKind?: TimeAxisKind
+  timeMaxDays?: number
   spotPoints?: number
   yPoints?: number
-}
-
-function referenceStrike(legs: StrategyLeg[], market: MarketParams): number {
-  const optionLegs = legs.filter((leg): leg is OptionLeg => leg.kind === 'option')
-  const totalQuantity = optionLegs.reduce((total, leg) => total + leg.quantity, 0)
-  if (totalQuantity <= 0) return market.spot
-
-  return (
-    optionLegs.reduce((total, leg) => total + leg.strike * leg.quantity, 0) /
-    totalQuantity
-  )
 }
 
 function logMoneynessX(
@@ -36,8 +36,11 @@ function logMoneynessX(
   market: MarketParams,
   strike: number,
 ): number {
-  const forward = spot * Math.exp((market.rate - market.dividendYield) * toYears(market.dteDays))
-  return Math.log(strike / Math.max(forward, 0.000001))
+  return logMoneyness(strike, spot, market, market.dteDays)
+}
+
+function timeAxisLabel(kind: TimeAxisKind): string {
+  return kind === 'days-forward' ? 'Days Forward' : 'DTE Remaining'
 }
 
 export function buildSurfaceGrid(
@@ -47,6 +50,7 @@ export function buildSurfaceGrid(
 ): SurfaceGrid {
   const spotPoints = config.spotPoints ?? 101
   const yPoints = config.yPoints ?? 61
+  const volModel = config.volModel ?? DEFAULT_VOL_MODEL
   const strikeReference = referenceStrike(legs, market)
   const spotRange = linspace(market.spot * 0.7, market.spot * 1.3, spotPoints)
   const points =
@@ -60,12 +64,18 @@ export function buildSurfaceGrid(
       : spotRange.map((spot) => ({ spot, x: spot }))
   const spots = points.map((point) => point.spot)
   const x = points.map((point) => point.x)
-  const referenceDte = Math.max(market.dteDays, MIN_DTE_DAYS)
+  const multiExpiry = hasMultipleExpiries(legs)
+  const timeAxisKind: TimeAxisKind =
+    config.timeAxisKind ??
+    (config.axisMode === 'spot-time' && multiExpiry ? 'days-forward' : 'dte-remaining')
+  const referenceDte = Math.max(config.timeMaxDays ?? maxDteDays(legs, market), MIN_DTE_DAYS)
   const y =
     config.axisMode === 'spot-time'
-      ? linspace(MIN_DTE_DAYS, referenceDte, yPoints)
+      ? timeAxisKind === 'days-forward'
+        ? linspace(0, referenceDte, yPoints)
+        : linspace(MIN_DTE_DAYS, Math.max(market.dteDays, MIN_DTE_DAYS), yPoints)
       : linspace(0.05, 0.8, yPoints)
-  const initialPrice = evaluateStrategy(legs, market).practical.price
+  const initialPrice = evaluateStrategy(legs, market, { volModel }).practical.price
 
   const z = y.map((axisValue) =>
     spots.map((spot) => {
@@ -77,8 +87,14 @@ export function buildSurfaceGrid(
         legs,
         pointMarket,
         config.axisMode === 'spot-time'
-          ? { elapsedDays: referenceDte - axisValue }
-          : { iv: axisValue },
+          ? {
+              elapsedDays:
+                timeAxisKind === 'days-forward'
+                  ? axisValue
+                  : Math.max(market.dteDays, MIN_DTE_DAYS) - axisValue,
+              volModel,
+            }
+          : { iv: axisValue, volModel },
       )
       return selectMetricValue(
         evaluation,
@@ -100,8 +116,14 @@ export function buildSurfaceGrid(
         legs,
         pointMarket,
         config.axisMode === 'spot-time'
-          ? { elapsedDays: referenceDte - axisValue }
-          : { iv: axisValue },
+          ? {
+              elapsedDays:
+                timeAxisKind === 'days-forward'
+                  ? axisValue
+                  : Math.max(market.dteDays, MIN_DTE_DAYS) - axisValue,
+              volModel,
+            }
+          : { iv: axisValue, volModel },
       )
       return selectMetricValue(
         evaluation,
@@ -128,6 +150,28 @@ export function buildSurfaceGrid(
       config.xAxisMode === 'log-moneyness'
         ? logMoneynessX(market.spot, market, strikeReference)
         : market.spot,
-    currentY: config.axisMode === 'spot-time' ? referenceDte : market.iv,
+    currentY:
+      config.axisMode === 'spot-time'
+        ? timeAxisKind === 'days-forward'
+          ? 0
+          : Math.max(market.dteDays, MIN_DTE_DAYS)
+        : market.iv,
+    timeAxisKind,
+    yAxisLabel: config.axisMode === 'spot-time' ? timeAxisLabel(timeAxisKind) : 'ATM IV',
+  }
+}
+
+export function buildDifferenceGrid(
+  left: SurfaceGrid,
+  right: SurfaceGrid,
+): SurfaceGrid {
+  return {
+    ...left,
+    z: left.z.map((row, rowIndex) =>
+      row.map((value, columnIndex) => value - right.z[rowIndex][columnIndex]),
+    ),
+    rawZ: left.rawZ.map((row, rowIndex) =>
+      row.map((value, columnIndex) => value - right.rawZ[rowIndex][columnIndex]),
+    ),
   }
 }

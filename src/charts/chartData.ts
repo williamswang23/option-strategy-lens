@@ -1,13 +1,5 @@
 import { clamp, percentile } from '../domain/math'
-import { yAxisLabel } from '../domain/strategy'
-import type {
-  AxisMode,
-  ClippingMode,
-  DisplayMode,
-  GreekMetric,
-  SurfaceGrid,
-  XAxisMode,
-} from '../domain/types'
+import type { ClippingMode, DisplayMode, GreekMetric, SurfaceGrid, XAxisMode } from '../domain/types'
 
 export const metricLabels: Record<GreekMetric, string> = {
   price: 'Strategy Value',
@@ -27,21 +19,24 @@ export const displayModeLabels: Record<DisplayMode, string> = {
   'pnl-contribution': 'P&L Contribution',
 }
 
-export function axisLabel(axisMode: AxisMode): string {
-  return yAxisLabel(axisMode)
+export function axisLabel(grid: SurfaceGrid): string {
+  if (grid.axisMode === 'spot-iv') return 'ATM IV'
+  return grid.yAxisLabel
 }
 
 export function xAxisLabel(xAxisMode: XAxisMode): string {
   return xAxisMode === 'log-moneyness' ? 'ln(K/F)' : 'Spot'
 }
 
-export function surfaceLabel(axisMode: AxisMode, xAxisMode: XAxisMode): string {
-  return `${xAxisLabel(xAxisMode)} x ${axisMode === 'spot-iv' ? 'IV' : 'DTE'}`
+export function surfaceLabel(grid: SurfaceGrid): string {
+  return `${xAxisLabel(grid.xAxisMode)} x ${axisLabel(grid)}`
 }
 
-export function formatAxisValue(axisMode: AxisMode, value: number): string {
-  if (axisMode === 'spot-iv') return `${(value * 100).toFixed(0)}%`
-  return `${value.toFixed(1)} DTE`
+export function formatAxisValue(grid: SurfaceGrid, value: number): string {
+  if (grid.axisMode === 'spot-iv') return `${(value * 100).toFixed(0)}% ATM IV`
+  return grid.timeAxisKind === 'days-forward'
+    ? `${value.toFixed(1)} days forward`
+    : `${value.toFixed(1)} DTE`
 }
 
 export function clippedZ(

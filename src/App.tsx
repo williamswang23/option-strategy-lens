@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState, useEffect } from 'react'
 import PlotModule from 'react-plotly.js'
-import { ExternalLink, Plus, Trash2 } from 'lucide-react'
-import type { Data } from 'plotly.js'
+import { Copy, Download, ExternalLink, Plus, Trash2 } from 'lucide-react'
+import type { Data, PlotlyHTMLElement } from 'plotly.js'
 import './App.css'
 import {
   axisLabel,
@@ -13,18 +13,26 @@ import {
   surfaceLabel,
   xAxisLabel,
 } from './charts/chartData'
-import { buildSurfaceGrid } from './domain/grid'
+import { buildDifferenceGrid, buildSurfaceGrid } from './domain/grid'
+import type { AppShareState } from './domain/shareState'
+import { decodeShareState, encodeShareState } from './domain/shareState'
 import { allStrategies } from './domain/strategies'
 import { evaluateStrategy, summarizeStrategy } from './domain/strategy'
+import { DEFAULT_VOL_MODEL, hasMultipleExpiries, maxDteDays } from './domain/volatility'
 import type {
   AxisMode,
   ClippingMode,
+  CompareView,
   DisplayMode,
   GreekMetric,
   MarketParams,
   OptionLeg,
+  ResolutionMode,
+  ScenarioKey,
   Side,
+  StrategyDefaults,
   StrategyLeg,
+  VolModel,
   XAxisMode,
 } from './domain/types'
 
@@ -67,6 +75,35 @@ const xAxisOptions: { value: XAxisMode; label: string }[] = [
 
 const displayOptions: DisplayMode[] = ['practical', 'raw', 'pnl-contribution']
 
+const resolutionOptions: { value: ResolutionMode; label: string }[] = [
+  { value: 'fast', label: 'Fast' },
+  { value: 'standard', label: 'Standard' },
+  { value: 'high', label: 'High' },
+]
+
+const resolutionSettings: Record<ResolutionMode, { spotPoints: number; yPoints: number }> = {
+  fast: { spotPoints: 61, yPoints: 31 },
+  standard: { spotPoints: 101, yPoints: 61 },
+  high: { spotPoints: 151, yPoints: 91 },
+}
+
+const volModelOptions: { value: VolModel['kind']; label: string }[] = [
+  { value: 'flat', label: 'Flat' },
+  { value: 'linear-skew', label: 'Linear Skew' },
+  { value: 'skew-smile', label: 'Skew + Smile' },
+]
+
+const scenarioOptions: { value: ScenarioKey; label: string }[] = [
+  { value: 'a', label: 'Scenario A' },
+  { value: 'b', label: 'Scenario B' },
+]
+
+const compareViewOptions: { value: CompareView; label: string }[] = [
+  { value: 'a', label: 'A' },
+  { value: 'b', label: 'B' },
+  { value: 'diff', label: 'A - B' },
+]
+
 const initialMarket: MarketParams = {
   spot: 100,
   dteDays: 30,
@@ -108,6 +145,17 @@ const initialTemplateLegs = defaultStrategy.buildLegs({
   ...initialBuilder,
 })
 
+const defaultCompareStrategyId = 'long-straddle'
+const defaultCompareStrategy =
+  allStrategies.find((strategy) => strategy.id === defaultCompareStrategyId) ?? allStrategies[0]
+const initialCompareBuilder = defaultCompareStrategy.defaults
+const initialCompareLegs = defaultCompareStrategy.buildLegs({
+  ...initialMarket,
+  ...initialCompareBuilder,
+})
+
+const initialSharedState = getInitialShareState()
+
 const financialColorscale: [number, string][] = [
   [0, '#7f1d1d'],
   [0.28, '#b45309'],
@@ -127,63 +175,247 @@ const axisStyle = {
 }
 
 function App() {
-  const [strategyId, setStrategyId] = useState(defaultStrategyId)
+  const surfacePlotRef = useRef<PlotlyHTMLElement | null>(null)
+  const [strategyId, setStrategyId] = useState(
+    initialSharedState?.strategyId ?? defaultStrategyId,
+  )
   const selectedStrategy = useMemo(
     () => allStrategies.find((strategy) => strategy.id === strategyId) ?? allStrategies[0],
     [strategyId],
   )
-  const [market, setMarket] = useState<MarketParams>(initialMarket)
-  const [builder, setBuilder] = useState(initialBuilder)
-  const [axisMode, setAxisMode] = useState<AxisMode>('spot-time')
-  const [xAxisMode, setXAxisMode] = useState<XAxisMode>('spot')
-  const [metric, setMetric] = useState<GreekMetric>('gamma')
-  const [displayMode, setDisplayMode] = useState<DisplayMode>('practical')
-  const [clippingMode, setClippingMode] = useState<ClippingMode>('percentile')
-  const [legs, setLegs] = useState<StrategyLeg[]>(initialTemplateLegs)
-
-  const grid = useMemo(
-    () =>
-      buildSurfaceGrid(legs, market, {
-        axisMode,
-        xAxisMode,
-        metric,
-        displayMode,
-      }),
-    [axisMode, displayMode, legs, market, metric, xAxisMode],
+  const [market, setMarket] = useState<MarketParams>(
+    initialSharedState?.market ?? initialMarket,
   )
+  const [builder, setBuilder] = useState<StrategyDefaults>(
+    initialSharedState?.builder ?? initialBuilder,
+  )
+  const [axisMode, setAxisMode] = useState<AxisMode>(
+    initialSharedState?.axisMode ?? 'spot-time',
+  )
+  const [xAxisMode, setXAxisMode] = useState<XAxisMode>(
+    initialSharedState?.xAxisMode ?? 'spot',
+  )
+  const [metric, setMetric] = useState<GreekMetric>(
+    initialSharedState?.metric ?? 'gamma',
+  )
+  const [displayMode, setDisplayMode] = useState<DisplayMode>(
+    initialSharedState?.displayMode ?? 'practical',
+  )
+  const [clippingMode, setClippingMode] = useState<ClippingMode>(
+    initialSharedState?.clippingMode ?? 'percentile',
+  )
+  const [resolutionMode, setResolutionMode] = useState<ResolutionMode>(
+    initialSharedState?.resolution ?? 'standard',
+  )
+  const [volModel, setVolModel] = useState<VolModel>(
+    initialSharedState?.volModel ?? DEFAULT_VOL_MODEL,
+  )
+  const [legs, setLegs] = useState<StrategyLeg[]>(
+    initialSharedState?.legs ?? initialTemplateLegs,
+  )
+  const [compareEnabled, setCompareEnabled] = useState(
+    initialSharedState?.compareState?.enabled ?? false,
+  )
+  const [activeScenario, setActiveScenario] = useState<ScenarioKey>(
+    initialSharedState?.compareState?.activeScenario ?? 'a',
+  )
+  const [compareView, setCompareView] = useState<CompareView>(
+    initialSharedState?.compareState?.view ?? 'diff',
+  )
+  const [compareStrategyId, setCompareStrategyId] = useState(
+    initialSharedState?.compareState?.scenarioB?.strategyId ?? defaultCompareStrategyId,
+  )
+  const selectedCompareStrategy = useMemo(
+    () =>
+      allStrategies.find((strategy) => strategy.id === compareStrategyId) ??
+      defaultCompareStrategy,
+    [compareStrategyId],
+  )
+  const [compareBuilder, setCompareBuilder] = useState<StrategyDefaults>(
+    initialSharedState?.compareState?.scenarioB?.builder ?? initialCompareBuilder,
+  )
+  const [compareLegs, setCompareLegs] = useState<StrategyLeg[]>(
+    initialSharedState?.compareState?.scenarioB?.legs ?? initialCompareLegs,
+  )
+  const [shareStatus, setShareStatus] = useState('')
+  const resolution = resolutionSettings[resolutionMode]
+  const calcInput = useMemo(
+    () => ({
+      axisMode,
+      compareLegs,
+      displayMode,
+      legs,
+      market,
+      metric,
+      resolutionMode,
+      volModel,
+      xAxisMode,
+    }),
+    [
+      axisMode,
+      compareLegs,
+      displayMode,
+      legs,
+      market,
+      metric,
+      resolutionMode,
+      volModel,
+      xAxisMode,
+    ],
+  )
+  const debouncedCalc = useDebouncedValue(calcInput, 160)
+  const debouncedResolution = resolutionSettings[debouncedCalc.resolutionMode]
+  const sharedTimeAxisKind =
+    compareEnabled &&
+    (hasMultipleExpiries(debouncedCalc.legs) ||
+      hasMultipleExpiries(debouncedCalc.compareLegs))
+      ? 'days-forward'
+      : undefined
+  const sharedTimeMaxDays = compareEnabled
+    ? Math.max(
+        maxDteDays(debouncedCalc.legs, debouncedCalc.market),
+        maxDteDays(debouncedCalc.compareLegs, debouncedCalc.market),
+      )
+    : undefined
+
+  const gridA = useMemo(
+    () =>
+      buildSurfaceGrid(debouncedCalc.legs, debouncedCalc.market, {
+        axisMode: debouncedCalc.axisMode,
+        xAxisMode: debouncedCalc.xAxisMode,
+        metric: debouncedCalc.metric,
+        displayMode: debouncedCalc.displayMode,
+        volModel: debouncedCalc.volModel,
+        timeAxisKind: sharedTimeAxisKind,
+        timeMaxDays: sharedTimeMaxDays,
+        spotPoints: debouncedResolution.spotPoints,
+        yPoints: debouncedResolution.yPoints,
+      }),
+    [
+      debouncedCalc,
+      debouncedResolution.spotPoints,
+      debouncedResolution.yPoints,
+      sharedTimeAxisKind,
+      sharedTimeMaxDays,
+    ],
+  )
+  const gridB = useMemo(
+    () =>
+      buildSurfaceGrid(debouncedCalc.compareLegs, debouncedCalc.market, {
+        axisMode: debouncedCalc.axisMode,
+        xAxisMode: debouncedCalc.xAxisMode,
+        metric: debouncedCalc.metric,
+        displayMode: debouncedCalc.displayMode,
+        volModel: debouncedCalc.volModel,
+        timeAxisKind: sharedTimeAxisKind,
+        timeMaxDays: sharedTimeMaxDays,
+        spotPoints: debouncedResolution.spotPoints,
+        yPoints: debouncedResolution.yPoints,
+      }),
+    [
+      debouncedCalc,
+      debouncedResolution.spotPoints,
+      debouncedResolution.yPoints,
+      sharedTimeAxisKind,
+      sharedTimeMaxDays,
+    ],
+  )
+  const diffGrid = useMemo(() => buildDifferenceGrid(gridA, gridB), [gridA, gridB])
+  const activeGrid = compareEnabled && activeScenario === 'b' ? gridB : gridA
+  const analysisGrid =
+    compareEnabled && compareView === 'b'
+      ? gridB
+      : compareEnabled && compareView === 'diff'
+        ? diffGrid
+        : gridA
+
+  const activeLegs =
+    compareEnabled && activeScenario === 'b' ? compareLegs : legs
+  const debouncedActiveLegs =
+    compareEnabled && activeScenario === 'b'
+      ? debouncedCalc.compareLegs
+      : debouncedCalc.legs
+
+  const grid = activeGrid
 
   const overviewItems = useMemo(
     () =>
       overviewMetrics.map((overviewMetric) => ({
         metric: overviewMetric,
-        grid: buildSurfaceGrid(legs, market, {
-          axisMode,
-          xAxisMode,
+        grid: buildSurfaceGrid(debouncedActiveLegs, debouncedCalc.market, {
+          axisMode: debouncedCalc.axisMode,
+          xAxisMode: debouncedCalc.xAxisMode,
           metric: overviewMetric,
           displayMode: 'practical',
+          volModel: debouncedCalc.volModel,
+          timeAxisKind: sharedTimeAxisKind,
+          timeMaxDays: sharedTimeMaxDays,
           spotPoints: 45,
           yPoints: 31,
         }),
       })),
-    [axisMode, legs, market, xAxisMode],
+    [
+      debouncedActiveLegs,
+      debouncedCalc.axisMode,
+      debouncedCalc.market,
+      debouncedCalc.volModel,
+      debouncedCalc.xAxisMode,
+      sharedTimeAxisKind,
+      sharedTimeMaxDays,
+    ],
   )
 
   const clipped = useMemo(
     () => clippedZ(grid, clippingMode),
     [clippingMode, grid],
   )
-  const summary = useMemo(() => summarizeStrategy(legs, market), [legs, market])
+  const clippedAnalysis = useMemo(
+    () => clippedZ(analysisGrid, clippingMode),
+    [analysisGrid, clippingMode],
+  )
+  const summary = useMemo(
+    () => summarizeStrategy(debouncedActiveLegs, debouncedCalc.market, {
+      volModel: debouncedCalc.volModel,
+    }),
+    [debouncedActiveLegs, debouncedCalc.market, debouncedCalc.volModel],
+  )
   const currentEvaluation = useMemo(
-    () => evaluateStrategy(legs, market),
-    [legs, market],
+    () =>
+      evaluateStrategy(debouncedActiveLegs, debouncedCalc.market, {
+        volModel: debouncedCalc.volModel,
+      }),
+    [debouncedActiveLegs, debouncedCalc.market, debouncedCalc.volModel],
+  )
+  const comparisonEvaluations = useMemo(
+    () => {
+      const left = evaluateStrategy(debouncedCalc.legs, debouncedCalc.market, {
+        volModel: debouncedCalc.volModel,
+      })
+      const right = evaluateStrategy(debouncedCalc.compareLegs, debouncedCalc.market, {
+        volModel: debouncedCalc.volModel,
+      })
+      return { left, right }
+    },
+    [
+      debouncedCalc.compareLegs,
+      debouncedCalc.legs,
+      debouncedCalc.market,
+      debouncedCalc.volModel,
+    ],
   )
   const chartY = useMemo(
-    () => (axisMode === 'spot-iv' ? grid.y.map((value) => value * 100) : grid.y),
-    [axisMode, grid.y],
+    () => (grid.axisMode === 'spot-iv' ? grid.y.map((value) => value * 100) : grid.y),
+    [grid.axisMode, grid.y],
   )
-  const sliceTarget = grid.currentY
-  const sliceIndex = nearestIndex(grid.y, sliceTarget)
-  const sliceLabel = formatAxisValue(axisMode, grid.y[sliceIndex])
+  const analysisChartY = useMemo(
+    () =>
+      analysisGrid.axisMode === 'spot-iv'
+        ? analysisGrid.y.map((value) => value * 100)
+        : analysisGrid.y,
+    [analysisGrid.axisMode, analysisGrid.y],
+  )
+  const sliceIndex = nearestIndex(analysisGrid.y, analysisGrid.currentY)
+  const sliceLabel = formatAxisValue(analysisGrid, analysisGrid.y[sliceIndex])
 
   const surfaceData = useMemo(() => {
     const zeroPlane = grid.z.map((row) => row.map(() => 0))
@@ -219,25 +451,25 @@ function App() {
     () => [
       {
         type: 'heatmap',
-        x: grid.x,
-        y: chartY,
-        z: clipped.z,
+        x: analysisGrid.x,
+        y: analysisChartY,
+        z: clippedAnalysis.z,
         colorscale: financialColorscale,
         zmid: 0,
         colorbar: { title: { text: metricLabels[metric] } },
       },
       {
         type: 'contour',
-        x: grid.x,
-        y: chartY,
-        z: grid.rawZ,
+        x: analysisGrid.x,
+        y: analysisChartY,
+        z: analysisGrid.rawZ,
         contours: { coloring: 'none', start: 0, end: 0, size: 1 },
         line: { color: '#d6b45f', width: 2 },
         showscale: false,
         hoverinfo: 'skip',
       },
     ] as Data[],
-    [chartY, clipped.z, grid.rawZ, grid.x, metric],
+    [analysisChartY, analysisGrid.rawZ, analysisGrid.x, clippedAnalysis.z, metric],
   )
 
   const sliceData = useMemo(
@@ -245,8 +477,8 @@ function App() {
       {
         type: 'scatter',
         mode: 'lines',
-        x: grid.x,
-        y: grid.z[sliceIndex],
+        x: analysisGrid.x,
+        y: analysisGrid.z[sliceIndex],
         line: { color: '#38bdf8', width: 3 },
         fill: 'tozeroy',
         fillcolor: 'rgba(56, 189, 248, 0.13)',
@@ -254,19 +486,25 @@ function App() {
       {
         type: 'scatter',
         mode: 'lines',
-        x: [grid.x[0], grid.x[grid.x.length - 1]],
+        x: [analysisGrid.x[0], analysisGrid.x[analysisGrid.x.length - 1]],
         y: [0, 0],
         line: { color: '#d6b45f', width: 1, dash: 'dot' },
         hoverinfo: 'skip',
       },
     ] as Data[],
-    [grid.x, grid.z, sliceIndex],
+    [analysisGrid.x, analysisGrid.z, sliceIndex],
   )
+
+  useEffect(() => {
+    if (!shareStatus) return undefined
+    const timeout = window.setTimeout(() => setShareStatus(''), 2400)
+    return () => window.clearTimeout(timeout)
+  }, [shareStatus])
 
   function templateLegsFor(
     strategyIdValue: string,
     marketValue: MarketParams,
-    builderValue: typeof builder,
+    builderValue: StrategyDefaults,
   ): StrategyLeg[] {
     const strategy =
       allStrategies.find((item) => item.id === strategyIdValue) ?? allStrategies[0]
@@ -282,18 +520,44 @@ function App() {
     setMarket(nextMarket)
 
     if (syncLegDefaults === 'dte') {
-      setLegs((currentLegs) =>
-        currentLegs.map((leg) =>
-          leg.kind === 'option' ? { ...leg, dteDays: nextMarket.dteDays } : leg,
-        ),
-      )
+      if (strategyId === 'custom') {
+        setLegs((currentLegs) =>
+          currentLegs.map((leg) =>
+            leg.kind === 'option' ? { ...leg, dteDays: nextMarket.dteDays } : leg,
+          ),
+        )
+      } else {
+        setLegs(templateLegsFor(strategyId, nextMarket, builder))
+      }
+      if (compareStrategyId === 'custom') {
+        setCompareLegs((currentLegs) =>
+          currentLegs.map((leg) =>
+            leg.kind === 'option' ? { ...leg, dteDays: nextMarket.dteDays } : leg,
+          ),
+        )
+      } else {
+        setCompareLegs(templateLegsFor(compareStrategyId, nextMarket, compareBuilder))
+      }
     }
     if (syncLegDefaults === 'iv') {
-      setLegs((currentLegs) =>
-        currentLegs.map((leg) =>
-          leg.kind === 'option' ? { ...leg, iv: nextMarket.iv } : leg,
-        ),
-      )
+      if (strategyId === 'custom') {
+        setLegs((currentLegs) =>
+          currentLegs.map((leg) =>
+            leg.kind === 'option' ? { ...leg, iv: nextMarket.iv } : leg,
+          ),
+        )
+      } else {
+        setLegs(templateLegsFor(strategyId, nextMarket, builder))
+      }
+      if (compareStrategyId === 'custom') {
+        setCompareLegs((currentLegs) =>
+          currentLegs.map((leg) =>
+            leg.kind === 'option' ? { ...leg, iv: nextMarket.iv } : leg,
+          ),
+        )
+      } else {
+        setCompareLegs(templateLegsFor(compareStrategyId, nextMarket, compareBuilder))
+      }
     }
   }
 
@@ -307,6 +571,75 @@ function App() {
 
   function resetLegsFromTemplate() {
     setLegs(templateLegsFor(strategyId, market, builder))
+  }
+
+  function updateCompareBuilder(patch: Partial<StrategyDefaults>) {
+    const nextBuilder = { ...compareBuilder, ...patch }
+    setCompareBuilder(nextBuilder)
+    if (compareStrategyId !== 'custom') {
+      setCompareLegs(templateLegsFor(compareStrategyId, market, nextBuilder))
+    }
+  }
+
+  function resetCompareLegsFromTemplate() {
+    setCompareLegs(templateLegsFor(compareStrategyId, market, compareBuilder))
+  }
+
+  function buildShareState(): AppShareState {
+    return {
+      version: 1,
+      strategyId,
+      market,
+      builder,
+      legs,
+      axisMode,
+      xAxisMode,
+      metric,
+      displayMode,
+      clippingMode,
+      resolution: resolutionMode,
+      volModel,
+      compareState: {
+        enabled: compareEnabled,
+        activeScenario,
+        view: compareView,
+        scenarioB: {
+          strategyId: compareStrategyId,
+          builder: compareBuilder,
+          legs: compareLegs,
+        },
+      },
+    }
+  }
+
+  async function copyShareLink() {
+    const encoded = encodeShareState(buildShareState())
+    const url = new URL(window.location.href)
+    url.search = ''
+    url.searchParams.set('state', encoded)
+    await navigator.clipboard.writeText(url.toString())
+    setShareStatus('Share link copied')
+  }
+
+  async function exportCurrentPng() {
+    if (!surfacePlotRef.current) return
+    const plotly = await import('plotly.js/dist/plotly-gl3d')
+    const toImage = (plotly as unknown as {
+      toImage: (
+        graphDiv: PlotlyHTMLElement,
+        options: { format: 'png'; width: number; height: number },
+      ) => Promise<string>
+    }).toImage
+    const imageUrl = await toImage(surfacePlotRef.current, {
+      format: 'png',
+      width: 1400,
+      height: 900,
+    })
+    const link = document.createElement('a')
+    link.href = imageUrl
+    link.download = `greek-surface-${metric}.png`
+    link.click()
+    setShareStatus('PNG exported')
   }
 
   return (
@@ -334,6 +667,7 @@ function App() {
       <section className="workspace">
         <aside className="control-panel" aria-label="Parameter controls">
           <PanelTitle title="Strategy Parameters" />
+          <p className="control-label">Scenario A</p>
           <label className="field">
             <span>Strategy</span>
             <select
@@ -360,6 +694,17 @@ function App() {
             </select>
           </label>
           <p className="strategy-note">{selectedStrategy.description}</p>
+          <SegmentedControl
+            options={[
+              { value: 'off', label: 'Compare Off' },
+              { value: 'on', label: 'Compare On' },
+            ]}
+            value={compareEnabled ? 'on' : 'off'}
+            onChange={(value) => {
+              setCompareEnabled(value === 'on')
+              if (value === 'on') setCompareView('diff')
+            }}
+          />
 
           <div className="field-grid two">
             <NumberField
@@ -445,11 +790,122 @@ function App() {
           ) : null}
 
           <PanelTitle title="Leg Editor" />
-          <LegEditor legs={legs} setLegs={setLegs} />
+          <LegEditor
+            ivModelDriven={volModel.kind !== 'flat'}
+            legs={legs}
+            setLegs={setLegs}
+          />
           {strategyId !== 'custom' ? (
             <button type="button" className="reset-legs" onClick={resetLegsFromTemplate}>
               Reset legs from template
             </button>
+          ) : null}
+
+          {compareEnabled ? (
+            <>
+              <PanelTitle title="Compare Scenario B" />
+              <label className="field">
+                <span>Strategy</span>
+                <select
+                  value={compareStrategyId}
+                  onChange={(event) => {
+                    const nextStrategy =
+                      allStrategies.find(
+                        (strategy) => strategy.id === event.target.value,
+                      ) ?? defaultCompareStrategy
+                    setCompareStrategyId(nextStrategy.id)
+                    setCompareBuilder(nextStrategy.defaults)
+                    setCompareLegs(
+                      nextStrategy.id === 'custom'
+                        ? initialCustomLegs
+                        : nextStrategy.buildLegs({ ...market, ...nextStrategy.defaults }),
+                    )
+                  }}
+                >
+                  {allStrategies.map((strategy) => (
+                    <option key={strategy.id} value={strategy.id}>
+                      {strategy.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="strategy-note">{selectedCompareStrategy.description}</p>
+              {compareStrategyId !== 'custom' ? (
+                <div className="field-grid two">
+                  <NumberField
+                    label="Strike"
+                    value={compareBuilder.strike}
+                    min={1}
+                    step={1}
+                    onChange={(strike) => updateCompareBuilder({ strike })}
+                  />
+                  <NumberField
+                    label="Wing Width"
+                    value={compareBuilder.wingWidth}
+                    min={1}
+                    step={1}
+                    onChange={(wingWidth) => updateCompareBuilder({ wingWidth })}
+                  />
+                  <NumberField
+                    label="Quantity"
+                    value={compareBuilder.quantity}
+                    min={0.1}
+                    step={1}
+                    onChange={(quantity) => updateCompareBuilder({ quantity })}
+                  />
+                </div>
+              ) : null}
+              <LegEditor
+                ivModelDriven={volModel.kind !== 'flat'}
+                legs={compareLegs}
+                setLegs={setCompareLegs}
+              />
+              {compareStrategyId !== 'custom' ? (
+                <button
+                  type="button"
+                  className="reset-legs"
+                  onClick={resetCompareLegsFromTemplate}
+                >
+                  Reset scenario B legs
+                </button>
+              ) : null}
+            </>
+          ) : null}
+
+          <PanelTitle title="Vol Model" />
+          <SegmentedControl
+            options={volModelOptions}
+            value={volModel.kind}
+            onChange={(kind) => setVolModel((current) => ({ ...current, kind }))}
+          />
+          {volModel.kind !== 'flat' ? (
+            <>
+              <div className="field-grid two">
+                <NumberField
+                  label="Skew"
+                  value={volModel.skew}
+                  min={-5}
+                  max={5}
+                  step={0.05}
+                  onChange={(skew) => setVolModel((current) => ({ ...current, skew }))}
+                />
+                {volModel.kind === 'skew-smile' ? (
+                  <NumberField
+                    label="Curvature"
+                    value={volModel.curvature}
+                    min={0}
+                    max={10}
+                    step={0.05}
+                    onChange={(curvature) =>
+                      setVolModel((current) => ({ ...current, curvature }))
+                    }
+                  />
+                ) : null}
+              </div>
+              <p className="model-note">
+                Non-flat models use ATM IV and derive each option IV from ln(K/F).
+              </p>
+            </>
           ) : null}
 
           <PanelTitle title="Visualization" />
@@ -491,6 +947,41 @@ function App() {
             value={clippingMode}
             onChange={setClippingMode}
           />
+          <p className="control-label">Resolution</p>
+          <SegmentedControl
+            options={resolutionOptions}
+            value={resolutionMode}
+            onChange={setResolutionMode}
+          />
+          {compareEnabled ? (
+            <>
+              <p className="control-label">Main 3D Surface</p>
+              <SegmentedControl
+                options={scenarioOptions}
+                value={activeScenario}
+                onChange={setActiveScenario}
+              />
+              <p className="control-label">2D / Slice View</p>
+              <SegmentedControl
+                options={compareViewOptions}
+                value={compareView}
+                onChange={setCompareView}
+              />
+            </>
+          ) : null}
+
+          <PanelTitle title="Share / Export" />
+          <div className="action-grid">
+            <button type="button" className="action-button" onClick={copyShareLink}>
+              <Copy size={16} />
+              Copy Share Link
+            </button>
+            <button type="button" className="action-button" onClick={exportCurrentPng}>
+              <Download size={16} />
+              Export PNG
+            </button>
+          </div>
+          {shareStatus ? <p className="status-note">{shareStatus}</p> : null}
         </aside>
 
         <section className="chart-panel" aria-label="Chart area">
@@ -498,8 +989,10 @@ function App() {
             <div>
               <h2>{metricLabels[metric]}</h2>
               <p>
-                {surfaceLabel(axisMode, xAxisMode)} ·{' '}
-                {displayModeLabels[displayMode]} · Slice {sliceLabel}
+                {surfaceLabel(grid)} ·{' '}
+                {displayModeLabels[displayMode]} · {resolution.spotPoints} x{' '}
+                {resolution.yPoints} · Slice {sliceLabel}
+                {compareEnabled ? ` · 2D ${compareView.toUpperCase()}` : ''}
               </p>
             </div>
             <div className="scale-readout">
@@ -517,8 +1010,8 @@ function App() {
                   plot_bgcolor: 'rgba(0,0,0,0)',
                   font: plotFont,
                   scene: {
-                    xaxis: { ...axisStyle, title: { text: xAxisLabel(xAxisMode) } },
-                    yaxis: { ...axisStyle, title: { text: axisLabel(axisMode) } },
+                    xaxis: { ...axisStyle, title: { text: xAxisLabel(grid.xAxisMode) } },
+                    yaxis: { ...axisStyle, title: { text: axisLabel(grid) } },
                     zaxis: { ...axisStyle, title: { text: metricLabels[metric] } },
                     camera: { eye: { x: 1.45, y: -1.45, z: 0.95 } },
                     bgcolor: 'rgba(7,12,20,0)',
@@ -528,6 +1021,12 @@ function App() {
                 config={{ displayModeBar: false, responsive: true }}
                 useResizeHandler
                 className="plot"
+                onInitialized={(_, graphDiv) => {
+                  surfacePlotRef.current = graphDiv as unknown as PlotlyHTMLElement
+                }}
+                onUpdate={(_, graphDiv) => {
+                  surfacePlotRef.current = graphDiv as unknown as PlotlyHTMLElement
+                }}
               />
             </div>
             <div className="plot-frame">
@@ -539,8 +1038,8 @@ function App() {
                   paper_bgcolor: 'rgba(0,0,0,0)',
                   plot_bgcolor: 'rgba(0,0,0,0)',
                   font: plotFont,
-                  xaxis: { ...axisStyle, title: { text: xAxisLabel(xAxisMode) } },
-                  yaxis: { ...axisStyle, title: { text: axisLabel(axisMode) } },
+                  xaxis: { ...axisStyle, title: { text: xAxisLabel(analysisGrid.xAxisMode) } },
+                  yaxis: { ...axisStyle, title: { text: axisLabel(analysisGrid) } },
                   showlegend: false,
                 }}
                 config={{ displayModeBar: false, responsive: true }}
@@ -557,7 +1056,7 @@ function App() {
                   paper_bgcolor: 'rgba(0,0,0,0)',
                   plot_bgcolor: 'rgba(0,0,0,0)',
                   font: plotFont,
-                  xaxis: { ...axisStyle, title: { text: xAxisLabel(xAxisMode) } },
+                  xaxis: { ...axisStyle, title: { text: xAxisLabel(analysisGrid.xAxisMode) } },
                   yaxis: { ...axisStyle, title: { text: metricLabels[metric] } },
                   showlegend: false,
                 }}
@@ -573,13 +1072,12 @@ function App() {
                 <h2>Greek Overview</h2>
                 <p>Small-multiple 2D risk maps with zero contours and current-state markers.</p>
               </div>
-              <span>{surfaceLabel(axisMode, xAxisMode)}</span>
+              <span>{surfaceLabel(grid)}</span>
             </div>
             <div className="overview-grid">
               {overviewItems.map((item) => (
                 <GreekOverviewCard
                   key={item.metric}
-                  axisMode={axisMode}
                   grid={item.grid}
                   isActive={item.metric === metric}
                   metric={item.metric}
@@ -613,9 +1111,40 @@ function App() {
             <SummaryRow label="Charm / day" value={formatCompact(currentEvaluation.practical.charm)} />
             <SummaryRow label="Volga / 1 vol" value={formatMoney(currentEvaluation.practical.volga)} />
           </div>
+          {compareEnabled ? (
+            <>
+              <PanelTitle title="Compare Greeks" />
+              <div className="compare-table">
+                <div className="compare-row head">
+                  <span>Metric</span>
+                  <span>A</span>
+                  <span>B</span>
+                  <span>A - B</span>
+                </div>
+                {(['delta', 'gamma', 'theta', 'vega'] as const).map((item) => (
+                  <div className="compare-row" key={item}>
+                    <span>{metricLabels[item]}</span>
+                    <strong>
+                      {formatGreekValue(item, comparisonEvaluations.left.practical[item])}
+                    </strong>
+                    <strong>
+                      {formatGreekValue(item, comparisonEvaluations.right.practical[item])}
+                    </strong>
+                    <strong>
+                      {formatGreekValue(
+                        item,
+                        comparisonEvaluations.left.practical[item] -
+                          comparisonEvaluations.right.practical[item],
+                      )}
+                    </strong>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
           <PanelTitle title="Legs" />
           <div className="legs-list">
-            {legs.map((leg, index) => (
+            {activeLegs.map((leg, index) => (
               <div className="leg-line" key={`${leg.kind}-${index}`}>
                 <strong>{leg.side}</strong>
                 {leg.kind === 'option' ? (
@@ -651,18 +1180,33 @@ function App() {
 interface NumberFieldProps {
   label: string
   value: number
+  disabled?: boolean
+  help?: string
   min?: number
   max?: number
   step?: number
   onChange: (value: number) => void
 }
 
-function NumberField({ label, value, min, max, step = 1, onChange }: NumberFieldProps) {
+function NumberField({
+  disabled = false,
+  help,
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  onChange,
+}: NumberFieldProps) {
   return (
     <label className="field">
-      <span>{label}</span>
+      <span>
+        {label}
+        {help ? <em>{help}</em> : null}
+      </span>
       <input
         type="number"
+        disabled={disabled}
         value={Number.isFinite(value) ? value : 0}
         min={min}
         max={max}
@@ -705,9 +1249,11 @@ function SegmentedControl<T extends string>({
 }
 
 function LegEditor({
+  ivModelDriven,
   legs,
   setLegs,
 }: {
+  ivModelDriven: boolean
   legs: StrategyLeg[]
   setLegs: (legs: StrategyLeg[]) => void
 }) {
@@ -767,7 +1313,11 @@ function LegEditor({
             </button>
           </div>
           {leg.kind === 'option' ? (
-            <OptionLegFields leg={leg} onChange={(updated) => updateLeg(index, updated)} />
+            <OptionLegFields
+              ivModelDriven={ivModelDriven}
+              leg={leg}
+              onChange={(updated) => updateLeg(index, updated)}
+            />
           ) : (
             <div className="field-grid two">
               <NumberField
@@ -815,9 +1365,11 @@ function LegEditor({
 }
 
 function OptionLegFields({
+  ivModelDriven,
   leg,
   onChange,
 }: {
+  ivModelDriven: boolean
   leg: OptionLeg
   onChange: (leg: OptionLeg) => void
 }) {
@@ -852,6 +1404,8 @@ function OptionLegFields({
         onChange={(dteDays) => onChange({ ...leg, dteDays })}
       />
       <NumberField
+        disabled={ivModelDriven}
+        help={ivModelDriven ? 'Model-driven' : undefined}
         label="IV %"
         value={leg.iv * 100}
         min={1}
@@ -871,22 +1425,20 @@ function OptionLegFields({
 }
 
 function GreekOverviewCard({
-  axisMode,
   grid,
   isActive,
   metric,
   onSelect,
   readout,
 }: {
-  axisMode: AxisMode
   grid: ReturnType<typeof buildSurfaceGrid>
   isActive: boolean
   metric: GreekMetric
   onSelect: () => void
   readout: string
 }) {
-  const overviewY = axisMode === 'spot-iv' ? grid.y.map((value) => value * 100) : grid.y
-  const markerY = axisMode === 'spot-iv' ? grid.currentY * 100 : grid.currentY
+  const overviewY = grid.axisMode === 'spot-iv' ? grid.y.map((value) => value * 100) : grid.y
+  const markerY = grid.axisMode === 'spot-iv' ? grid.currentY * 100 : grid.currentY
   const overviewClipped = clippedZ(grid, 'percentile')
   const data = [
     {
@@ -951,7 +1503,7 @@ function GreekOverviewCard({
           },
           yaxis: {
             ...axisStyle,
-            title: { text: axisMode === 'spot-iv' ? 'IV' : 'DTE' },
+            title: { text: axisLabel(grid) },
             fixedrange: true,
             tickfont: { color: '#91a1b8', size: 9 },
           },
@@ -1017,6 +1569,31 @@ function formatMetricReadout(
     return formatMoney(evaluation.practical[metric])
   }
   return formatCompact(evaluation.practical[metric])
+}
+
+function formatGreekValue(metric: GreekMetric, value: number): string {
+  if (metric === 'theta' || metric === 'vega' || metric === 'volga') {
+    return formatMoney(value)
+  }
+  return formatCompact(value)
+}
+
+function getInitialShareState(): AppShareState | null {
+  if (typeof window === 'undefined') return null
+  const encoded = new URLSearchParams(window.location.search).get('state')
+  if (!encoded) return null
+  return decodeShareState(encoded)
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value)
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebounced(value), delayMs)
+    return () => window.clearTimeout(timeout)
+  }, [delayMs, value])
+
+  return debounced
 }
 
 export default App

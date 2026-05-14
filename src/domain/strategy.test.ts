@@ -69,6 +69,9 @@ describe('strategy evaluation', () => {
     expect(
       strategies.find((strategy) => strategy.id === 'iron-condor')?.buildLegs(builder),
     ).toHaveLength(4)
+    expect(
+      strategies.find((strategy) => strategy.id === 'calendar-spread')?.buildLegs(builder),
+    ).toHaveLength(2)
   })
 
   it('underlying legs only contribute price and delta', () => {
@@ -85,5 +88,17 @@ describe('strategy evaluation', () => {
     expect(evaluated.gamma).toBe(0)
     expect(evaluated.theta).toBe(0)
     expect(evaluated.vega).toBe(0)
+  })
+
+  it('treats expired option legs as payoff only with zero Greeks', () => {
+    const expired = evaluateStrategy([longCall()], { ...market, spot: 110 }, {
+      elapsedDays: 31,
+    }).practical
+
+    expect(expired.price).toBe(1000)
+    expect(expired.delta).toBe(0)
+    expect(expired.gamma).toBe(0)
+    expect(expired.theta).toBe(0)
+    expect(expired.vega).toBe(0)
   })
 })

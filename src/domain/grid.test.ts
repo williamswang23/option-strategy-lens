@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { buildSurfaceGrid } from './grid'
+import { buildDifferenceGrid, buildSurfaceGrid } from './grid'
 import { MIN_DTE_DAYS, toYears } from './math'
-import type { MarketParams, StrategyLeg } from './types'
+import type { MarketParams, OptionLeg, StrategyLeg } from './types'
 
 const market: MarketParams = {
   spot: 100,
@@ -56,5 +56,51 @@ describe('surface grid', () => {
     expect(grid.currentX).toBeCloseTo(expectedCurrentX, 10)
     expect(grid.x[0]).toBeLessThan(grid.x[grid.x.length - 1])
     expect(grid.spots[0]).toBeGreaterThan(grid.spots[grid.spots.length - 1])
+  })
+
+  it('uses days forward when option expiries differ', () => {
+    const option = legs[0] as OptionLeg
+    const grid = buildSurfaceGrid(
+      [
+        option,
+        { ...option, side: 'short', dteDays: 60, strike: 105 },
+      ],
+      market,
+      {
+        axisMode: 'spot-time',
+        xAxisMode: 'spot',
+        metric: 'vega',
+        displayMode: 'practical',
+        yPoints: 3,
+      },
+    )
+
+    expect(grid.timeAxisKind).toBe('days-forward')
+    expect(grid.y[0]).toBe(0)
+    expect(grid.y[grid.y.length - 1]).toBe(60)
+    expect(grid.currentY).toBe(0)
+  })
+
+  it('computes compare difference grids as A minus B', () => {
+    const left = buildSurfaceGrid(legs, market, {
+      axisMode: 'spot-iv',
+      xAxisMode: 'spot',
+      metric: 'price',
+      displayMode: 'practical',
+      spotPoints: 3,
+      yPoints: 3,
+    })
+    const right = buildSurfaceGrid([{ ...legs[0], side: 'short' }], market, {
+      axisMode: 'spot-iv',
+      xAxisMode: 'spot',
+      metric: 'price',
+      displayMode: 'practical',
+      spotPoints: 3,
+      yPoints: 3,
+    })
+    const diff = buildDifferenceGrid(left, right)
+
+    expect(diff.z[1][1]).toBeCloseTo(left.z[1][1] - right.z[1][1], 10)
+    expect(diff.rawZ[1][1]).toBeCloseTo(left.rawZ[1][1] - right.rawZ[1][1], 10)
   })
 })

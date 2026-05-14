@@ -1,5 +1,6 @@
 import { bsmGreeks } from './bsm'
-import { linspace, roundTo } from './math'
+import { linspace, MIN_DTE_DAYS, roundTo } from './math'
+import { DEFAULT_VOL_MODEL, resolveLegIv } from './volatility'
 import type {
   AxisMode,
   DisplayMode,
@@ -77,6 +78,7 @@ export function evaluateStrategy(
 ): EvaluatedStrategy {
   const practical = emptyPractical()
   const raw = emptyRaw()
+  const volModel = overrides?.volModel ?? DEFAULT_VOL_MODEL
 
   for (const leg of legs) {
     const scale = sideSign(leg.side) * leg.quantity * leg.multiplier
@@ -89,16 +91,39 @@ export function evaluateStrategy(
       continue
     }
 
-    const legDteDays =
-      overrides?.dteDays ??
-      Math.max(leg.dteDays - (overrides?.elapsedDays ?? 0), 0.25)
+    const remainingDte =
+      overrides?.dteDays ?? leg.dteDays - (overrides?.elapsedDays ?? 0)
+
+    if (remainingDte <= 0) {
+      const intrinsic =
+        leg.type === 'call'
+          ? Math.max(market.spot - leg.strike, 0)
+          : Math.max(leg.strike - market.spot, 0)
+      practical.price += intrinsic * scale
+      raw.price += intrinsic * scale
+      continue
+    }
+
+    const legDteDays = Math.max(remainingDte, MIN_DTE_DAYS)
+    const atmIv = overrides?.iv ?? market.iv
+    const legIv =
+      volModel.kind === 'flat'
+        ? overrides?.iv ?? leg.iv
+        : resolveLegIv({
+            leg,
+            market,
+            spot: market.spot,
+            dteDays: legDteDays,
+            atmIv,
+            volModel,
+          })
 
     const optionGreeks = bsmGreeks({
       type: leg.type,
       spot: market.spot,
       strike: leg.strike,
       dteDays: legDteDays,
-      iv: overrides?.iv ?? leg.iv,
+      iv: legIv,
       rate: market.rate,
       dividendYield: market.dividendYield,
     })
@@ -185,8 +210,9 @@ function tailSlope(legs: StrategyLeg[]): number {
 export function summarizeStrategy(
   legs: StrategyLeg[],
   market: MarketParams,
+  overrides?: EvaluationOverrides,
 ): StrategySummary {
-  const current = evaluateStrategy(legs, market)
+  const current = evaluateStrategy(legs, market, overrides)
   const netPremium = current.practical.price
   const strikes = legs
     .filter((leg): leg is OptionLeg => leg.kind === 'option')
@@ -217,10 +243,10 @@ export function summarizeStrategy(
   const sensitivitySamples = linspace(market.spot * 0.7, market.spot * 1.3, 121)
   const sensitiveSpot = sensitivitySamples.reduce((bestSpot, spot) => {
     const bestGamma = Math.abs(
-      evaluateStrategy(legs, { ...market, spot: bestSpot }).practical.gamma,
+      evaluateStrategy(legs, { ...market, spot: bestSpot }, overrides).practical.gamma,
     )
     const gamma = Math.abs(
-      evaluateStrategy(legs, { ...market, spot }).practical.gamma,
+      evaluateStrategy(legs, { ...market, spot }, overrides).practical.gamma,
     )
     return gamma > bestGamma ? spot : bestSpot
   }, market.spot)

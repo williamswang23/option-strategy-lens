@@ -16,6 +16,17 @@ export type AxisMode = 'spot-time' | 'spot-iv'
 export type XAxisMode = 'spot' | 'log-moneyness'
 export type DisplayMode = 'raw' | 'practical' | 'pnl-contribution'
 export type ClippingMode = 'percentile' | 'raw'
+export type ResolutionMode = 'fast' | 'standard' | 'high'
+export type VolModelKind = 'flat' | 'linear-skew' | 'skew-smile'
+export type ScenarioKey = 'a' | 'b'
+export type CompareView = 'a' | 'b' | 'diff'
+export type TimeAxisKind = 'dte-remaining' | 'days-forward'
+
+export interface VolModel {
+  kind: VolModelKind
+  skew: number
+  curvature: number
+}
 
 export interface MarketParams {
   spot: number
@@ -112,12 +123,15 @@ export interface SurfaceGrid {
   referenceStrike: number
   currentX: number
   currentY: number
+  timeAxisKind: TimeAxisKind
+  yAxisLabel: string
 }
 
 export interface EvaluationOverrides {
   dteDays?: number
   iv?: number
   elapsedDays?: number
+  volModel?: VolModel
 }
 
 export interface StrategySummary {

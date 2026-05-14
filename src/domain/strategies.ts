@@ -12,6 +12,7 @@ function optionLeg(
   side: Side,
   strike: number,
   quantity = params.quantity,
+  overrides?: Partial<Pick<OptionLeg, 'dteDays' | 'iv'>>,
 ): OptionLeg {
   return {
     kind: 'option',
@@ -19,8 +20,8 @@ function optionLeg(
     side,
     quantity,
     strike,
-    dteDays: params.dteDays,
-    iv: params.iv,
+    dteDays: overrides?.dteDays ?? params.dteDays,
+    iv: overrides?.iv ?? params.iv,
     multiplier: params.multiplier,
   }
 }
@@ -248,6 +249,34 @@ export const strategies: Strategy[] = [
       underlyingLeg(params, 'long'),
       optionLeg(params, 'put', 'long', params.strike - params.wingWidth),
       optionLeg(params, 'call', 'short', params.strike + params.wingWidth),
+    ],
+  },
+  {
+    id: 'calendar-spread',
+    name: 'Calendar Spread',
+    description: 'Short front expiry and long back expiry at the same strike.',
+    recommendedGreeks: ['vega', 'gamma', 'theta', 'charm'],
+    defaults: defaults(),
+    buildLegs: (params) => [
+      optionLeg(params, 'call', 'short', params.strike),
+      optionLeg(params, 'call', 'long', params.strike, params.quantity, {
+        dteDays: params.dteDays + 30,
+        iv: params.iv + 0.02,
+      }),
+    ],
+  },
+  {
+    id: 'diagonal-spread',
+    name: 'Diagonal Spread',
+    description: 'Directional calendar structure with different strikes and expiries.',
+    recommendedGreeks: ['delta', 'vega', 'charm', 'vanna'],
+    defaults: defaults({ wingWidth: 5 }),
+    buildLegs: (params) => [
+      optionLeg(params, 'call', 'short', params.strike + params.wingWidth),
+      optionLeg(params, 'call', 'long', params.strike, params.quantity, {
+        dteDays: params.dteDays + 30,
+        iv: params.iv + 0.02,
+      }),
     ],
   },
 ]
