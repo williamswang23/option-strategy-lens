@@ -1,0 +1,39 @@
+# Option Strategy Greek Surface Trainer
+
+一个纯前端的期权策略 Greek 直觉训练器。它使用 European BSM / Black-Scholes 假设，在统一的 flat IV、连续股息率和常数利率下，展示多腿期权策略的价格、P&L 与 Greeks 曲面。
+
+## What It Does
+
+- 按 option / underlying legs 定义策略，并对价格与 Greeks 线性加总。
+- 支持 `Spot x Time` 与 `Spot x IV` 两种曲面视角。
+- 同步展示 3D surface、2D heatmap / zero contour、当前横截面 slice。
+- 使用 practical Greek convention：
+  - `Theta`: 每天价值变化
+  - `Vega`: 每 1 vol point IV 变化的价值变化
+  - `Charm`: 每天 delta 变化
+  - `Vanna`: 每 1 vol point IV 变化导致的 delta 变化
+  - `Volga`: 每 1 vol point IV 变化导致的 vega 变化
+
+## Local Development
+
+```bash
+npm install
+npm run dev
+```
+
+## Validation
+
+```bash
+npm run test
+npm run build
+```
+
+## Deployment Direction
+
+This app is designed as a static Vite build. The intended deployment path is:
+
+1. Push the repo to GitHub.
+2. Connect it to Cloudflare Pages via Git integration.
+3. Use `npm run build` and publish the `dist` directory.
+
+The MVP does not use real-time market data, marketdata.app, FRED, backend APIs, American exercise, or volatility skew.
