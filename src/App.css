@@ -61,6 +61,33 @@
   font-weight: 650;
 }
 
+.brand-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 6px;
+}
+
+.brand-actions .copyright-mark {
+  margin: 0;
+}
+
+.header-social-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #7dd3fc;
+  font-size: 12px;
+  font-weight: 760;
+  text-decoration: none;
+}
+
+.header-social-link:hover {
+  color: #bae6fd;
+  text-decoration: underline;
+}
+
 .topbar-metrics {
   display: flex;
   flex-wrap: wrap;

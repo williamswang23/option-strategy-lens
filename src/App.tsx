@@ -11,6 +11,7 @@ import {
   metricLabels,
   nearestIndex,
   surfaceLabel,
+  type ZScaleResult,
   xAxisLabel,
 } from './charts/chartData'
 import { buildDifferenceGrid, buildSurfaceGrid } from './domain/grid'
@@ -202,7 +203,7 @@ function App() {
     initialSharedState?.displayMode ?? 'practical',
   )
   const [clippingMode, setClippingMode] = useState<ClippingMode>(
-    initialSharedState?.clippingMode ?? 'percentile',
+    initialSharedState?.clippingMode ?? 'compressed',
   )
   const [resolutionMode, setResolutionMode] = useState<ResolutionMode>(
     initialSharedState?.resolution ?? 'standard',
@@ -416,6 +417,11 @@ function App() {
   )
   const sliceIndex = nearestIndex(analysisGrid.y, analysisGrid.currentY)
   const sliceLabel = formatAxisValue(analysisGrid, analysisGrid.y[sliceIndex])
+  const zScaleTitle =
+    clippingMode === 'compressed'
+      ? `${metricLabels[metric]} (compressed)`
+      : metricLabels[metric]
+  const zScaleReadout = formatZScaleReadout(clippingMode, clipped)
 
   const surfaceData = useMemo(() => {
     const zeroPlane = grid.z.map((row) => row.map(() => 0))
@@ -425,12 +431,16 @@ function App() {
         x: grid.x,
         y: chartY,
         z: clipped.z,
+        customdata: grid.z,
         colorscale: financialColorscale,
         zmid: 0,
-        colorbar: { title: { text: metricLabels[metric] } },
+        colorbar: buildScaleColorbar(zScaleTitle, clipped),
         contours: {
           z: { show: true, usecolormap: true, highlightcolor: '#d6b45f' },
         },
+        hovertemplate: `${xAxisLabel(grid.xAxisMode)} %{x:.3f}<br>${axisLabel(
+          grid,
+        )} %{y:.2f}<br>${metricLabels[metric]} %{customdata:.4f}<extra></extra>`,
       },
       {
         type: 'surface',
@@ -445,7 +455,7 @@ function App() {
         ],
       },
     ] as Data[]
-  }, [chartY, clipped.z, grid.x, grid.z, metric])
+  }, [chartY, clipped, grid, metric, zScaleTitle])
 
   const heatmapData = useMemo(
     () => [
@@ -454,9 +464,13 @@ function App() {
         x: analysisGrid.x,
         y: analysisChartY,
         z: clippedAnalysis.z,
+        customdata: analysisGrid.z,
         colorscale: financialColorscale,
         zmid: 0,
-        colorbar: { title: { text: metricLabels[metric] } },
+        colorbar: buildScaleColorbar(zScaleTitle, clippedAnalysis),
+        hovertemplate: `${xAxisLabel(analysisGrid.xAxisMode)} %{x:.3f}<br>${axisLabel(
+          analysisGrid,
+        )} %{y:.2f}<br>${metricLabels[metric]} %{customdata:.4f}<extra></extra>`,
       },
       {
         type: 'contour',
@@ -469,7 +483,7 @@ function App() {
         hoverinfo: 'skip',
       },
     ] as Data[],
-    [analysisChartY, analysisGrid.rawZ, analysisGrid.x, clippedAnalysis.z, metric],
+    [analysisChartY, analysisGrid, clippedAnalysis, metric, zScaleTitle],
   )
 
   const sliceData = useMemo(
@@ -654,7 +668,19 @@ function App() {
           <div>
             <p className="eyebrow">BSM Risk Surface Terminal</p>
             <h1>Option Strategy Greek Surface Trainer</h1>
-            <p className="copyright-mark">© 2026 williamswang</p>
+            <div className="brand-actions">
+              <p className="copyright-mark">© 2026 williamswang</p>
+              <a
+                className="header-social-link"
+                href="https://x.com/williamswjt"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Follow williamswjt on X"
+              >
+                Follow @williamswjt on X
+                <ExternalLink size={13} />
+              </a>
+            </div>
           </div>
         </div>
         <div className="topbar-metrics">
@@ -941,6 +967,7 @@ function App() {
           />
           <SegmentedControl
             options={[
+              { value: 'compressed', label: 'Compressed' },
               { value: 'percentile', label: '2-98% Clip' },
               { value: 'raw', label: 'Raw Scale' },
             ]}
@@ -996,7 +1023,7 @@ function App() {
               </p>
             </div>
             <div className="scale-readout">
-              Z scale {formatCompact(clipped.min)} to {formatCompact(clipped.max)}
+              Z scale {zScaleReadout}
             </div>
           </div>
           <div className="chart-grid">
@@ -1012,7 +1039,11 @@ function App() {
                   scene: {
                     xaxis: { ...axisStyle, title: { text: xAxisLabel(grid.xAxisMode) } },
                     yaxis: { ...axisStyle, title: { text: axisLabel(grid) } },
-                    zaxis: { ...axisStyle, title: { text: metricLabels[metric] } },
+                    zaxis: {
+                      ...axisStyle,
+                      title: { text: zScaleTitle },
+                      ...buildCompressedAxisTicks(clipped),
+                    },
                     camera: { eye: { x: 1.45, y: -1.45, z: 0.95 } },
                     bgcolor: 'rgba(7,12,20,0)',
                   },
@@ -1537,6 +1568,32 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   )
+}
+
+function buildScaleColorbar(title: string, scale: ZScaleResult): Record<string, unknown> {
+  return {
+    title: { text: title },
+    ...buildCompressedAxisTicks(scale),
+  }
+}
+
+function buildCompressedAxisTicks(scale: ZScaleResult): Record<string, unknown> {
+  if (!scale.tickvals || !scale.ticktext) return {}
+  return {
+    tickmode: 'array',
+    tickvals: scale.tickvals,
+    ticktext: scale.ticktext,
+  }
+}
+
+function formatZScaleReadout(mode: ClippingMode, scale: ZScaleResult): string {
+  if (mode === 'compressed') {
+    return `Compressed · raw ${formatCompact(scale.rawMin)} to ${formatCompact(scale.rawMax)}`
+  }
+  if (mode === 'percentile') {
+    return `2-98% clip ${formatCompact(scale.displayMin)} to ${formatCompact(scale.displayMax)}`
+  }
+  return `Raw ${formatCompact(scale.rawMin)} to ${formatCompact(scale.rawMax)}`
 }
 
 function formatMoney(value: number): string {
