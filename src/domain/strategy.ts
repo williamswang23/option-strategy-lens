@@ -243,5 +243,5 @@ export function summarizeStrategy(
 }
 
 export function yAxisLabel(axisMode: AxisMode): string {
-  return axisMode === 'spot-time' ? 'Days Elapsed' : 'IV'
+  return axisMode === 'spot-time' ? 'DTE Remaining' : 'IV'
 }

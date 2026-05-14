@@ -5,7 +5,8 @@
 ## What It Does
 
 - 按 option / underlying legs 定义策略，并对价格与 Greeks 线性加总。
-- 支持 `Spot x Time` 与 `Spot x IV` 两种曲面视角。
+- 支持 `Time` 与 `IV` 两种曲面视角，时间轴使用 `DTE Remaining`。
+- 横轴支持 `Spot` 与 `ln(K/F)` 两种显示模式。
 - 同步展示 3D surface、2D heatmap / zero contour、当前横截面 slice。
 - 使用 practical Greek convention：
   - `Theta`: 每天价值变化

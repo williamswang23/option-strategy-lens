@@ -1,6 +1,13 @@
 import { clamp, percentile } from '../domain/math'
 import { yAxisLabel } from '../domain/strategy'
-import type { AxisMode, ClippingMode, DisplayMode, GreekMetric, SurfaceGrid } from '../domain/types'
+import type {
+  AxisMode,
+  ClippingMode,
+  DisplayMode,
+  GreekMetric,
+  SurfaceGrid,
+  XAxisMode,
+} from '../domain/types'
 
 export const metricLabels: Record<GreekMetric, string> = {
   price: 'Strategy Value',
@@ -24,9 +31,17 @@ export function axisLabel(axisMode: AxisMode): string {
   return yAxisLabel(axisMode)
 }
 
+export function xAxisLabel(xAxisMode: XAxisMode): string {
+  return xAxisMode === 'log-moneyness' ? 'ln(K/F)' : 'Spot'
+}
+
+export function surfaceLabel(axisMode: AxisMode, xAxisMode: XAxisMode): string {
+  return `${xAxisLabel(xAxisMode)} x ${axisMode === 'spot-iv' ? 'IV' : 'DTE'}`
+}
+
 export function formatAxisValue(axisMode: AxisMode, value: number): string {
   if (axisMode === 'spot-iv') return `${(value * 100).toFixed(0)}%`
-  return `${value.toFixed(1)}d elapsed`
+  return `${value.toFixed(1)} DTE`
 }
 
 export function clippedZ(

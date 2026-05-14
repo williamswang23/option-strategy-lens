@@ -13,6 +13,7 @@ export type GreekMetric =
   | 'volga'
 
 export type AxisMode = 'spot-time' | 'spot-iv'
+export type XAxisMode = 'spot' | 'log-moneyness'
 export type DisplayMode = 'raw' | 'practical' | 'pnl-contribution'
 export type ClippingMode = 'percentile' | 'raw'
 
@@ -100,12 +101,17 @@ export interface GridPoint {
 
 export interface SurfaceGrid {
   x: number[]
+  spots: number[]
   y: number[]
   z: number[][]
   rawZ: number[][]
   axisMode: AxisMode
+  xAxisMode: XAxisMode
   metric: GreekMetric
   displayMode: DisplayMode
+  referenceStrike: number
+  currentX: number
+  currentY: number
 }
 
 export interface EvaluationOverrides {

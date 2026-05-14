@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import PlotModule from 'react-plotly.js'
-import { Plus, Trash2 } from 'lucide-react'
+import { ExternalLink, Plus, Trash2 } from 'lucide-react'
 import type { Data } from 'plotly.js'
 import './App.css'
 import {
@@ -10,6 +10,8 @@ import {
   formatAxisValue,
   metricLabels,
   nearestIndex,
+  surfaceLabel,
+  xAxisLabel,
 } from './charts/chartData'
 import { buildSurfaceGrid } from './domain/grid'
 import { allStrategies } from './domain/strategies'
@@ -23,6 +25,7 @@ import type {
   OptionLeg,
   Side,
   StrategyLeg,
+  XAxisMode,
 } from './domain/types'
 
 const Plot = (
@@ -53,8 +56,13 @@ const overviewMetrics: GreekMetric[] = [
 ]
 
 const axisOptions: { value: AxisMode; label: string }[] = [
-  { value: 'spot-time', label: 'Spot x Time' },
-  { value: 'spot-iv', label: 'Spot x IV' },
+  { value: 'spot-time', label: 'Time' },
+  { value: 'spot-iv', label: 'IV' },
+]
+
+const xAxisOptions: { value: XAxisMode; label: string }[] = [
+  { value: 'spot', label: 'Spot' },
+  { value: 'log-moneyness', label: 'ln(K/F)' },
 ]
 
 const displayOptions: DisplayMode[] = ['practical', 'raw', 'pnl-contribution']
@@ -127,6 +135,7 @@ function App() {
   const [market, setMarket] = useState<MarketParams>(initialMarket)
   const [builder, setBuilder] = useState(initialBuilder)
   const [axisMode, setAxisMode] = useState<AxisMode>('spot-time')
+  const [xAxisMode, setXAxisMode] = useState<XAxisMode>('spot')
   const [metric, setMetric] = useState<GreekMetric>('gamma')
   const [displayMode, setDisplayMode] = useState<DisplayMode>('practical')
   const [clippingMode, setClippingMode] = useState<ClippingMode>('percentile')
@@ -136,10 +145,11 @@ function App() {
     () =>
       buildSurfaceGrid(legs, market, {
         axisMode,
+        xAxisMode,
         metric,
         displayMode,
       }),
-    [axisMode, displayMode, legs, market, metric],
+    [axisMode, displayMode, legs, market, metric, xAxisMode],
   )
 
   const overviewItems = useMemo(
@@ -148,13 +158,14 @@ function App() {
         metric: overviewMetric,
         grid: buildSurfaceGrid(legs, market, {
           axisMode,
+          xAxisMode,
           metric: overviewMetric,
           displayMode: 'practical',
           spotPoints: 45,
           yPoints: 31,
         }),
       })),
-    [axisMode, legs, market],
+    [axisMode, legs, market, xAxisMode],
   )
 
   const clipped = useMemo(
@@ -170,7 +181,7 @@ function App() {
     () => (axisMode === 'spot-iv' ? grid.y.map((value) => value * 100) : grid.y),
     [axisMode, grid.y],
   )
-  const sliceTarget = axisMode === 'spot-iv' ? market.iv : 0
+  const sliceTarget = grid.currentY
   const sliceIndex = nearestIndex(grid.y, sliceTarget)
   const sliceLabel = formatAxisValue(axisMode, grid.y[sliceIndex])
 
@@ -442,10 +453,17 @@ function App() {
           ) : null}
 
           <PanelTitle title="Visualization" />
+          <p className="control-label">Y Axis</p>
           <SegmentedControl
             options={axisOptions}
             value={axisMode}
             onChange={setAxisMode}
+          />
+          <p className="control-label">X Axis</p>
+          <SegmentedControl
+            options={xAxisOptions}
+            value={xAxisMode}
+            onChange={setXAxisMode}
           />
           <label className="field">
             <span>Metric</span>
@@ -480,7 +498,7 @@ function App() {
             <div>
               <h2>{metricLabels[metric]}</h2>
               <p>
-                {axisOptions.find((option) => option.value === axisMode)?.label} ·{' '}
+                {surfaceLabel(axisMode, xAxisMode)} ·{' '}
                 {displayModeLabels[displayMode]} · Slice {sliceLabel}
               </p>
             </div>
@@ -499,7 +517,7 @@ function App() {
                   plot_bgcolor: 'rgba(0,0,0,0)',
                   font: plotFont,
                   scene: {
-                    xaxis: { ...axisStyle, title: { text: 'Spot' } },
+                    xaxis: { ...axisStyle, title: { text: xAxisLabel(xAxisMode) } },
                     yaxis: { ...axisStyle, title: { text: axisLabel(axisMode) } },
                     zaxis: { ...axisStyle, title: { text: metricLabels[metric] } },
                     camera: { eye: { x: 1.45, y: -1.45, z: 0.95 } },
@@ -521,7 +539,7 @@ function App() {
                   paper_bgcolor: 'rgba(0,0,0,0)',
                   plot_bgcolor: 'rgba(0,0,0,0)',
                   font: plotFont,
-                  xaxis: { ...axisStyle, title: { text: 'Spot' } },
+                  xaxis: { ...axisStyle, title: { text: xAxisLabel(xAxisMode) } },
                   yaxis: { ...axisStyle, title: { text: axisLabel(axisMode) } },
                   showlegend: false,
                 }}
@@ -539,7 +557,7 @@ function App() {
                   paper_bgcolor: 'rgba(0,0,0,0)',
                   plot_bgcolor: 'rgba(0,0,0,0)',
                   font: plotFont,
-                  xaxis: { ...axisStyle, title: { text: 'Spot' } },
+                  xaxis: { ...axisStyle, title: { text: xAxisLabel(xAxisMode) } },
                   yaxis: { ...axisStyle, title: { text: metricLabels[metric] } },
                   showlegend: false,
                 }}
@@ -555,15 +573,13 @@ function App() {
                 <h2>Greek Overview</h2>
                 <p>Small-multiple 2D risk maps with zero contours and current-state markers.</p>
               </div>
-              <span>{axisOptions.find((option) => option.value === axisMode)?.label}</span>
+              <span>{surfaceLabel(axisMode, xAxisMode)}</span>
             </div>
             <div className="overview-grid">
               {overviewItems.map((item) => (
                 <GreekOverviewCard
                   key={item.metric}
                   axisMode={axisMode}
-                  currentIv={market.iv}
-                  currentSpot={market.spot}
                   grid={item.grid}
                   isActive={item.metric === metric}
                   metric={item.metric}
@@ -616,6 +632,16 @@ function App() {
       </section>
       <footer className="copyright">
         <span>© 2026 williamswang.</span>
+        <a
+          className="social-link"
+          href="https://x.com/williamswjt"
+          target="_blank"
+          rel="noreferrer"
+          aria-label="Follow williamswjt on X"
+        >
+          Follow @williamswjt on X
+          <ExternalLink size={13} />
+        </a>
         <span>Educational visualization only. Not investment advice.</span>
       </footer>
     </main>
@@ -846,8 +872,6 @@ function OptionLegFields({
 
 function GreekOverviewCard({
   axisMode,
-  currentIv,
-  currentSpot,
   grid,
   isActive,
   metric,
@@ -855,8 +879,6 @@ function GreekOverviewCard({
   readout,
 }: {
   axisMode: AxisMode
-  currentIv: number
-  currentSpot: number
   grid: ReturnType<typeof buildSurfaceGrid>
   isActive: boolean
   metric: GreekMetric
@@ -864,7 +886,7 @@ function GreekOverviewCard({
   readout: string
 }) {
   const overviewY = axisMode === 'spot-iv' ? grid.y.map((value) => value * 100) : grid.y
-  const markerY = axisMode === 'spot-iv' ? currentIv * 100 : 0
+  const markerY = axisMode === 'spot-iv' ? grid.currentY * 100 : grid.currentY
   const overviewClipped = clippedZ(grid, 'percentile')
   const data = [
     {
@@ -875,7 +897,7 @@ function GreekOverviewCard({
       colorscale: financialColorscale,
       zmid: 0,
       showscale: false,
-      hovertemplate: 'Spot %{x:.2f}<br>Y %{y:.2f}<br>Value %{z:.4f}<extra></extra>',
+      hovertemplate: `${xAxisLabel(grid.xAxisMode)} %{x:.3f}<br>Y %{y:.2f}<br>Value %{z:.4f}<extra></extra>`,
     },
     {
       type: 'contour',
@@ -890,7 +912,7 @@ function GreekOverviewCard({
     {
       type: 'scatter',
       mode: 'markers',
-      x: [currentSpot],
+      x: [grid.currentX],
       y: [markerY],
       marker: {
         color: '#f8fafc',
@@ -923,13 +945,13 @@ function GreekOverviewCard({
           font: { ...plotFont, size: 9 },
           xaxis: {
             ...axisStyle,
-            title: { text: 'Spot' },
+            title: { text: xAxisLabel(grid.xAxisMode) },
             fixedrange: true,
             tickfont: { color: '#91a1b8', size: 9 },
           },
           yaxis: {
             ...axisStyle,
-            title: { text: axisMode === 'spot-iv' ? 'IV' : 'Elapsed' },
+            title: { text: axisMode === 'spot-iv' ? 'IV' : 'DTE' },
             fixedrange: true,
             tickfont: { color: '#91a1b8', size: 9 },
           },
