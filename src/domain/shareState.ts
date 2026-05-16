@@ -34,6 +34,7 @@ export interface AppShareState {
   legs: StrategyLeg[]
   axisMode: AxisMode
   xAxisMode: XAxisMode
+  sliceValue?: number | null
   metric: GreekMetric
   displayMode: DisplayMode
   clippingMode: ClippingMode

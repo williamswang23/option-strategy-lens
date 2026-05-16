@@ -189,6 +189,33 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.model-iv-readout {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid #2c3b52;
+  border-radius: 7px;
+  background: rgba(8, 17, 31, 0.76);
+}
+
+.model-iv-readout span {
+  color: #91a1b8;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.model-iv-readout strong {
+  color: #d6b45f;
+  font-size: 14px;
+}
+
+.model-iv-readout small {
+  color: #91a1b8;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 input,
 select,
 button {
@@ -212,6 +239,11 @@ input:disabled {
   color: #77859a;
   cursor: not-allowed;
   opacity: 0.72;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
 }
 
 input:focus,
@@ -299,6 +331,60 @@ button:focus-visible {
   margin: 4px 0 0;
   color: #91a1b8;
   font-size: 13px;
+}
+
+.slice-control {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.35fr) minmax(240px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #253246;
+  border-radius: 8px;
+  background: #08111f;
+}
+
+.slice-control-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.slice-control-head span {
+  color: #91a1b8;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.slice-control-head strong {
+  color: #f8fafc;
+  font-size: 13px;
+  text-align: right;
+}
+
+.slice-control input[type='range'] {
+  min-height: 28px;
+  padding: 0;
+}
+
+.slice-control button {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  background: #0a1322;
+  color: #7dd3fc;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.slice-control button:disabled {
+  cursor: not-allowed;
 }
 
 .scale-readout {
@@ -675,6 +761,20 @@ button:focus-visible {
   .chart-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .slice-control {
+    grid-template-columns: 1fr;
+  }
+
+  .slice-control-head {
+    align-items: start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .slice-control-head strong {
+    text-align: left;
   }
 
   .scale-readout {

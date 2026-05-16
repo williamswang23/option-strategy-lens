@@ -19,7 +19,12 @@ import type { AppShareState } from './domain/shareState'
 import { decodeShareState, encodeShareState } from './domain/shareState'
 import { allStrategies } from './domain/strategies'
 import { evaluateStrategy, summarizeStrategy } from './domain/strategy'
-import { DEFAULT_VOL_MODEL, hasMultipleExpiries, maxDteDays } from './domain/volatility'
+import {
+  DEFAULT_VOL_MODEL,
+  hasMultipleExpiries,
+  maxDteDays,
+  resolveLegIv,
+} from './domain/volatility'
 import type {
   AxisMode,
   ClippingMode,
@@ -195,6 +200,9 @@ function App() {
   )
   const [xAxisMode, setXAxisMode] = useState<XAxisMode>(
     initialSharedState?.xAxisMode ?? 'spot',
+  )
+  const [manualSliceY, setManualSliceY] = useState<number | null>(
+    initialSharedState?.sliceValue ?? null,
   )
   const [metric, setMetric] = useState<GreekMetric>(
     initialSharedState?.metric ?? 'gamma',
@@ -415,8 +423,24 @@ function App() {
         : analysisGrid.y,
     [analysisGrid.axisMode, analysisGrid.y],
   )
-  const sliceIndex = nearestIndex(analysisGrid.y, analysisGrid.currentY)
-  const sliceLabel = formatAxisValue(analysisGrid, analysisGrid.y[sliceIndex])
+  const sliceTarget = clampToGridRange(
+    manualSliceY ?? analysisGrid.currentY,
+    analysisGrid.y,
+  )
+  const sliceIndex = nearestIndex(analysisGrid.y, sliceTarget)
+  const activeSliceY = analysisGrid.y[sliceIndex]
+  const sliceLabel = formatAxisValue(analysisGrid, activeSliceY)
+  const sliceSliderValue =
+    analysisGrid.axisMode === 'spot-iv' ? activeSliceY * 100 : activeSliceY
+  const sliceSliderMin =
+    analysisGrid.axisMode === 'spot-iv'
+      ? analysisGrid.y[0] * 100
+      : analysisGrid.y[0]
+  const sliceSliderMax =
+    analysisGrid.axisMode === 'spot-iv'
+      ? analysisGrid.y[analysisGrid.y.length - 1] * 100
+      : analysisGrid.y[analysisGrid.y.length - 1]
+  const sliceSliderStep = analysisGrid.axisMode === 'spot-iv' ? 1 : 0.25
   const zScaleTitle =
     clippingMode === 'compressed'
       ? `${metricLabels[metric]} (compressed)`
@@ -611,6 +635,7 @@ function App() {
       metric,
       displayMode,
       clippingMode,
+      sliceValue: manualSliceY,
       resolution: resolutionMode,
       volModel,
       compareState: {
@@ -705,6 +730,7 @@ function App() {
                 setStrategyId(nextStrategy.id)
                 setBuilder(nextStrategy.defaults)
                 setMetric(nextStrategy.recommendedGreeks[0] ?? 'gamma')
+                setManualSliceY(null)
                 setLegs(
                   nextStrategy.id === 'custom'
                     ? initialCustomLegs
@@ -748,7 +774,8 @@ function App() {
               onChange={(dteDays) => updateMarket({ dteDays }, 'dte')}
             />
             <NumberField
-              label="IV %"
+              help={volModel.kind === 'flat' ? 'Default leg IV' : 'Surface anchor'}
+              label={volModel.kind === 'flat' ? 'IV %' : 'ATM IV %'}
               value={market.iv * 100}
               min={1}
               max={300}
@@ -819,7 +846,9 @@ function App() {
           <LegEditor
             ivModelDriven={volModel.kind !== 'flat'}
             legs={legs}
+            market={market}
             setLegs={setLegs}
+            volModel={volModel}
           />
           {strategyId !== 'custom' ? (
             <button type="button" className="reset-legs" onClick={resetLegsFromTemplate}>
@@ -841,6 +870,7 @@ function App() {
                       ) ?? defaultCompareStrategy
                     setCompareStrategyId(nextStrategy.id)
                     setCompareBuilder(nextStrategy.defaults)
+                    setManualSliceY(null)
                     setCompareLegs(
                       nextStrategy.id === 'custom'
                         ? initialCustomLegs
@@ -884,7 +914,9 @@ function App() {
               <LegEditor
                 ivModelDriven={volModel.kind !== 'flat'}
                 legs={compareLegs}
+                market={market}
                 setLegs={setCompareLegs}
+                volModel={volModel}
               />
               {compareStrategyId !== 'custom' ? (
                 <button
@@ -904,6 +936,11 @@ function App() {
             value={volModel.kind}
             onChange={(kind) => setVolModel((current) => ({ ...current, kind }))}
           />
+          {volModel.kind === 'flat' ? (
+            <p className="model-note">
+              Flat uses each leg IV; the top IV field sets template and reset defaults.
+            </p>
+          ) : null}
           {volModel.kind !== 'flat' ? (
             <>
               <div className="field-grid two">
@@ -929,7 +966,8 @@ function App() {
                 ) : null}
               </div>
               <p className="model-note">
-                Non-flat models use ATM IV and derive each option IV from ln(K/F).
+                Teaching surface only: ATM IV anchors the curve, while each option
+                leg receives a model IV from ln(K/F), skew, and smile curvature.
               </p>
             </>
           ) : null}
@@ -939,7 +977,10 @@ function App() {
           <SegmentedControl
             options={axisOptions}
             value={axisMode}
-            onChange={setAxisMode}
+            onChange={(value) => {
+              setAxisMode(value)
+              setManualSliceY(null)
+            }}
           />
           <p className="control-label">X Axis</p>
           <SegmentedControl
@@ -1025,6 +1066,32 @@ function App() {
             <div className="scale-readout">
               Z scale {zScaleReadout}
             </div>
+          </div>
+          <div className="slice-control">
+            <div className="slice-control-head">
+              <span>Slice</span>
+              <strong>{sliceLabel}</strong>
+            </div>
+            <input
+              aria-label={`Slice ${axisLabel(analysisGrid)}`}
+              max={sliceSliderMax}
+              min={sliceSliderMin}
+              step={sliceSliderStep}
+              type="range"
+              value={sliceSliderValue}
+              onChange={(event) => {
+                const value = Number(event.target.value)
+                if (!Number.isFinite(value)) return
+                setManualSliceY(analysisGrid.axisMode === 'spot-iv' ? value / 100 : value)
+              }}
+            />
+            <button
+              type="button"
+              disabled={manualSliceY === null}
+              onClick={() => setManualSliceY(null)}
+            >
+              Reset to Current
+            </button>
           </div>
           <div className="chart-grid">
             <div className="plot-frame large">
@@ -1282,11 +1349,15 @@ function SegmentedControl<T extends string>({
 function LegEditor({
   ivModelDriven,
   legs,
+  market,
   setLegs,
+  volModel,
 }: {
   ivModelDriven: boolean
   legs: StrategyLeg[]
+  market: MarketParams
   setLegs: (legs: StrategyLeg[]) => void
+  volModel: VolModel
 }) {
   function updateLeg(index: number, leg: StrategyLeg) {
     setLegs(legs.map((item, itemIndex) => (itemIndex === index ? leg : item)))
@@ -1347,7 +1418,9 @@ function LegEditor({
             <OptionLegFields
               ivModelDriven={ivModelDriven}
               leg={leg}
+              market={market}
               onChange={(updated) => updateLeg(index, updated)}
+              volModel={volModel}
             />
           ) : (
             <div className="field-grid two">
@@ -1398,12 +1471,27 @@ function LegEditor({
 function OptionLegFields({
   ivModelDriven,
   leg,
+  market,
   onChange,
+  volModel,
 }: {
   ivModelDriven: boolean
   leg: OptionLeg
+  market: MarketParams
   onChange: (leg: OptionLeg) => void
+  volModel: VolModel
 }) {
+  const resolvedModelIv = ivModelDriven
+    ? resolveLegIv({
+        leg,
+        market,
+        spot: market.spot,
+        dteDays: leg.dteDays,
+        atmIv: market.iv,
+        volModel,
+      })
+    : null
+
   return (
     <div className="field-grid two">
       <label className="field">
@@ -1437,13 +1525,20 @@ function OptionLegFields({
       <NumberField
         disabled={ivModelDriven}
         help={ivModelDriven ? 'Model-driven' : undefined}
-        label="IV %"
+        label={ivModelDriven ? 'Manual IV %' : 'IV %'}
         value={leg.iv * 100}
         min={1}
         max={300}
         step={1}
         onChange={(ivPct) => onChange({ ...leg, iv: ivPct / 100 })}
       />
+      {resolvedModelIv !== null ? (
+        <div className="model-iv-readout">
+          <span>Model IV</span>
+          <strong>{formatPercent(resolvedModelIv)}</strong>
+          <small>ATM IV + skew/smile at this leg strike</small>
+        </div>
+      ) : null}
       <NumberField
         label="Multiplier"
         value={leg.multiplier}
@@ -1604,12 +1699,22 @@ function formatMoney(value: number): string {
   })}`
 }
 
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(2)}%`
+}
+
 function formatCompact(value: number): string {
   if (!Number.isFinite(value)) return 'n/a'
   if (Math.abs(value) >= 1000) return value.toExponential(2)
   if (Math.abs(value) >= 10) return value.toFixed(2)
   if (Math.abs(value) >= 1) return value.toFixed(3)
   return value.toFixed(5)
+}
+
+function clampToGridRange(value: number, range: number[]): number {
+  const min = range[0]
+  const max = range[range.length - 1]
+  return Math.min(Math.max(value, min), max)
 }
 
 function formatBound(value: number | 'Unlimited'): string {

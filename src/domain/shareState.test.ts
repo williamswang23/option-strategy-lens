@@ -32,6 +32,7 @@ const state: AppShareState = {
   ],
   axisMode: 'spot-time',
   xAxisMode: 'spot',
+  sliceValue: 7,
   metric: 'gamma',
   displayMode: 'practical',
   clippingMode: 'percentile',
