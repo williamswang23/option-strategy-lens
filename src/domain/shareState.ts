@@ -5,6 +5,7 @@ import type {
   DisplayMode,
   GreekMetric,
   MarketParams,
+  PricePathConfig,
   ResolutionMode,
   ScenarioKey,
   StrategyDefaults,
@@ -41,6 +42,7 @@ export interface AppShareState {
   resolution: ResolutionMode
   volModel: VolModel
   compareState: CompareShareState
+  pathConfig?: PricePathConfig
 }
 
 export function encodeShareState(state: AppShareState): string {

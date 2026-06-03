@@ -15,13 +15,20 @@ import {
   xAxisLabel,
 } from './charts/chartData'
 import { buildDifferenceGrid, buildSurfaceGrid } from './domain/grid'
+import { MIN_DTE_DAYS } from './domain/math'
+import {
+  buildPricePath,
+  defaultPathConfigForMarket,
+  MAX_PATH_STEPS,
+} from './domain/path'
 import type { AppShareState } from './domain/shareState'
 import { decodeShareState, encodeShareState } from './domain/shareState'
 import { allStrategies } from './domain/strategies'
-import { evaluateStrategy, summarizeStrategy } from './domain/strategy'
+import { evaluateStrategy, selectMetricValue, summarizeStrategy } from './domain/strategy'
 import {
   DEFAULT_VOL_MODEL,
   hasMultipleExpiries,
+  logMoneyness,
   maxDteDays,
   resolveLegIv,
 } from './domain/volatility'
@@ -33,6 +40,10 @@ import type {
   GreekMetric,
   MarketParams,
   OptionLeg,
+  PathIvMode,
+  PathModelKind,
+  PricePathConfig,
+  PricePathPoint,
   ResolutionMode,
   ScenarioKey,
   Side,
@@ -80,6 +91,17 @@ const xAxisOptions: { value: XAxisMode; label: string }[] = [
 ]
 
 const displayOptions: DisplayMode[] = ['practical', 'raw', 'pnl-contribution']
+
+const pathModelOptions: { value: PathModelKind; label: string }[] = [
+  { value: 'gbm', label: 'GBM' },
+  { value: 'jump-diffusion', label: 'Jump Diffusion' },
+  { value: 'historical-bootstrap', label: 'Bootstrap' },
+]
+
+const pathIvModeOptions: { value: PathIvMode; label: string }[] = [
+  { value: 'constant', label: 'Constant IV' },
+  { value: 'linear', label: 'Linear IV' },
+]
 
 const resolutionOptions: { value: ResolutionMode; label: string }[] = [
   { value: 'fast', label: 'Fast' },
@@ -161,6 +183,9 @@ const initialCompareLegs = defaultCompareStrategy.buildLegs({
 })
 
 const initialSharedState = getInitialShareState()
+const initialPathConfig =
+  initialSharedState?.pathConfig ??
+  defaultPathConfigForMarket(initialSharedState?.market ?? initialMarket)
 
 const financialColorscale: [number, string][] = [
   [0, '#7f1d1d'],
@@ -178,6 +203,13 @@ const axisStyle = {
   linecolor: '#3b485c',
   tickfont: { color: '#aeb8c8' },
   titlefont: { color: '#cbd5e1' },
+}
+
+interface PathMetricPoint {
+  point: PricePathPoint
+  x: number
+  y: number
+  value: number
 }
 
 function App() {
@@ -246,6 +278,7 @@ function App() {
   const [compareLegs, setCompareLegs] = useState<StrategyLeg[]>(
     initialSharedState?.compareState?.scenarioB?.legs ?? initialCompareLegs,
   )
+  const [pathConfig, setPathConfig] = useState<PricePathConfig>(initialPathConfig)
   const [shareStatus, setShareStatus] = useState('')
   const resolution = resolutionSettings[resolutionMode]
   const calcInput = useMemo(
@@ -273,6 +306,7 @@ function App() {
     ],
   )
   const debouncedCalc = useDebouncedValue(calcInput, 160)
+  const debouncedPathConfig = useDebouncedValue(pathConfig, 160)
   const debouncedResolution = resolutionSettings[debouncedCalc.resolutionMode]
   const sharedTimeAxisKind =
     compareEnabled &&
@@ -344,6 +378,7 @@ function App() {
     compareEnabled && activeScenario === 'b'
       ? debouncedCalc.compareLegs
       : debouncedCalc.legs
+  const pathHorizonMax = Math.max(1, maxDteDays(activeLegs, market))
 
   const grid = activeGrid
 
@@ -412,6 +447,86 @@ function App() {
       debouncedCalc.volModel,
     ],
   )
+  const debouncedPathHorizonMax = Math.max(
+    1,
+    maxDteDays(debouncedActiveLegs, debouncedCalc.market),
+  )
+  const pathPoints = useMemo(
+    () =>
+      debouncedPathConfig.enabled
+        ? buildPricePath(
+            debouncedCalc.market,
+            debouncedPathConfig,
+            debouncedPathHorizonMax,
+          )
+        : [],
+    [debouncedCalc.market, debouncedPathConfig, debouncedPathHorizonMax],
+  )
+  const pathInitialPrice = useMemo(() => {
+    const firstPoint = pathPoints[0]
+    if (!firstPoint) return currentEvaluation.practical.price
+    return evaluatePathPoint(
+      debouncedActiveLegs,
+      debouncedCalc.market,
+      firstPoint,
+      debouncedPathConfig,
+      debouncedCalc.volModel,
+    ).practical.price
+  }, [
+    currentEvaluation.practical.price,
+    debouncedActiveLegs,
+    debouncedCalc.market,
+    debouncedCalc.volModel,
+    debouncedPathConfig,
+    pathPoints,
+  ])
+  const pathMetricPoints = useMemo<PathMetricPoint[]>(
+    () =>
+      pathPoints.map((point) => {
+        const evaluation = evaluatePathPoint(
+          debouncedActiveLegs,
+          debouncedCalc.market,
+          point,
+          debouncedPathConfig,
+          debouncedCalc.volModel,
+        )
+        const selected = selectMetricValue(
+          evaluation,
+          debouncedCalc.metric,
+          debouncedCalc.displayMode,
+          point.spot,
+          pathInitialPrice,
+        )
+        return {
+          point,
+          x: pathPointX(point, grid, debouncedCalc.market),
+          y: pathPointY(point, grid, debouncedCalc.market),
+          value: selected.value,
+        }
+      }),
+    [
+      debouncedActiveLegs,
+      debouncedCalc.displayMode,
+      debouncedCalc.market,
+      debouncedCalc.metric,
+      debouncedCalc.volModel,
+      debouncedPathConfig,
+      grid,
+      pathInitialPrice,
+      pathPoints,
+    ],
+  )
+  const pathStats = useMemo(() => {
+    if (pathMetricPoints.length === 0) return null
+    const endpoint = pathMetricPoints[pathMetricPoints.length - 1]
+    const min = pathMetricPoints.reduce((best, point) =>
+      point.value < best.value ? point : best,
+    )
+    const max = pathMetricPoints.reduce((best, point) =>
+      point.value > best.value ? point : best,
+    )
+    return { endpoint, min, max }
+  }, [pathMetricPoints])
   const chartY = useMemo(
     () => (grid.axisMode === 'spot-iv' ? grid.y.map((value) => value * 100) : grid.y),
     [grid.axisMode, grid.y],
@@ -449,7 +564,7 @@ function App() {
 
   const surfaceData = useMemo(() => {
     const zeroPlane = grid.z.map((row) => row.map(() => 0))
-    return [
+    const traces: Data[] = [
       {
         type: 'surface',
         x: grid.x,
@@ -479,10 +594,38 @@ function App() {
         ],
       },
     ] as Data[]
-  }, [chartY, clipped, grid, metric, zScaleTitle])
 
-  const heatmapData = useMemo(
-    () => [
+    if (grid.axisMode === 'spot-time' && pathMetricPoints.length > 0) {
+      traces.push({
+        type: 'scatter3d',
+        mode: 'lines+markers',
+        name: 'Path',
+        x: pathMetricPoints.map((point) => point.x),
+        y: pathMetricPoints.map((point) => point.y),
+        z: pathMetricPoints.map((point) => clipped.transformValue(point.value)),
+        customdata: pathMetricPoints.map((point) => [
+          point.point.elapsedDays,
+          point.point.spot,
+          point.point.atmIv * 100,
+          point.value,
+        ]),
+        line: { color: '#f59e0b', width: 7 },
+        marker: {
+          color: '#fef3c7',
+          line: { color: '#f59e0b', width: 1 },
+          size: 3,
+        },
+        hovertemplate:
+          'Path day %{customdata[0]:.1f}<br>Spot %{customdata[1]:.2f}<br>ATM IV %{customdata[2]:.1f}%<br>' +
+          `${metricLabels[metric]} %{customdata[3]:.4f}<extra></extra>`,
+      } as Data)
+    }
+
+    return traces
+  }, [chartY, clipped, grid, metric, pathMetricPoints, zScaleTitle])
+
+  const heatmapData = useMemo(() => {
+    const traces: Data[] = [
       {
         type: 'heatmap',
         x: analysisGrid.x,
@@ -506,9 +649,42 @@ function App() {
         showscale: false,
         hoverinfo: 'skip',
       },
-    ] as Data[],
-    [analysisChartY, analysisGrid, clippedAnalysis, metric, zScaleTitle],
-  )
+    ] as Data[]
+
+    if (analysisGrid.axisMode === 'spot-time' && pathMetricPoints.length > 0) {
+      traces.push({
+        type: 'scatter',
+        mode: 'lines+markers',
+        name: 'Path',
+        x: pathMetricPoints.map((point) => point.x),
+        y: pathMetricPoints.map((point) => point.y),
+        customdata: pathMetricPoints.map((point) => [
+          point.point.elapsedDays,
+          point.point.spot,
+          point.point.atmIv * 100,
+          point.value,
+        ]),
+        line: { color: '#f59e0b', width: 3 },
+        marker: {
+          color: '#fef3c7',
+          line: { color: '#f59e0b', width: 1 },
+          size: 5,
+        },
+        hovertemplate:
+          'Path day %{customdata[0]:.1f}<br>Spot %{customdata[1]:.2f}<br>ATM IV %{customdata[2]:.1f}%<br>' +
+          `${metricLabels[metric]} %{customdata[3]:.4f}<extra></extra>`,
+      } as Data)
+    }
+
+    return traces
+  }, [
+    analysisChartY,
+    analysisGrid,
+    clippedAnalysis,
+    metric,
+    pathMetricPoints,
+    zScaleTitle,
+  ])
 
   const sliceData = useMemo(
     () => [
@@ -531,6 +707,39 @@ function App() {
       },
     ] as Data[],
     [analysisGrid.x, analysisGrid.z, sliceIndex],
+  )
+
+  const pathProfileData = useMemo(
+    () => [
+      {
+        type: 'scatter',
+        mode: 'lines+markers',
+        x: pathMetricPoints.map((point) => point.point.elapsedDays),
+        y: pathMetricPoints.map((point) => point.value),
+        customdata: pathMetricPoints.map((point) => [
+          point.point.spot,
+          point.point.atmIv * 100,
+        ]),
+        line: { color: '#f59e0b', width: 3 },
+        marker: {
+          color: '#fef3c7',
+          line: { color: '#f59e0b', width: 1 },
+          size: 5,
+        },
+        hovertemplate:
+          'Day %{x:.1f}<br>Spot %{customdata[0]:.2f}<br>ATM IV %{customdata[1]:.1f}%<br>' +
+          `${metricLabels[metric]} %{y:.4f}<extra></extra>`,
+      },
+      {
+        type: 'scatter',
+        mode: 'lines',
+        x: pathMetricPoints.map((point) => point.point.elapsedDays),
+        y: pathMetricPoints.map(() => 0),
+        line: { color: '#d6b45f', width: 1, dash: 'dot' },
+        hoverinfo: 'skip',
+      },
+    ] as Data[],
+    [metric, pathMetricPoints],
   )
 
   useEffect(() => {
@@ -623,6 +832,17 @@ function App() {
     setCompareLegs(templateLegsFor(compareStrategyId, market, compareBuilder))
   }
 
+  function updatePathConfig(patch: Partial<PricePathConfig>) {
+    setPathConfig((current) => ({ ...current, ...patch }))
+  }
+
+  function resetPathConfigFromMarket() {
+    setPathConfig({
+      ...defaultPathConfigForMarket(market),
+      enabled: pathConfig.enabled,
+    })
+  }
+
   function buildShareState(): AppShareState {
     return {
       version: 1,
@@ -648,6 +868,7 @@ function App() {
           legs: compareLegs,
         },
       },
+      pathConfig,
     }
   }
 
@@ -972,6 +1193,13 @@ function App() {
             </>
           ) : null}
 
+          <PathScenarioControls
+            config={pathConfig}
+            horizonMax={pathHorizonMax}
+            onChange={updatePathConfig}
+            onReset={resetPathConfigFromMarket}
+          />
+
           <PanelTitle title="Visualization" />
           <p className="control-label">Y Axis</p>
           <SegmentedControl
@@ -1061,6 +1289,7 @@ function App() {
                 {displayModeLabels[displayMode]} · {resolution.spotPoints} x{' '}
                 {resolution.yPoints} · Slice {sliceLabel}
                 {compareEnabled ? ` · 2D ${compareView.toUpperCase()}` : ''}
+                {debouncedPathConfig.enabled ? ` · Path ${pathPoints.length} pts` : ''}
               </p>
             </div>
             <div className="scale-readout">
@@ -1164,6 +1393,48 @@ function App() {
               />
             </div>
           </div>
+          {debouncedPathConfig.enabled && pathMetricPoints.length > 0 ? (
+            <section className="path-profile-section" aria-label="Path profile">
+              <div className="overview-heading">
+                <div>
+                  <h2>Path Profile</h2>
+                  <p>
+                    {metricLabels[metric]} · End{' '}
+                    {formatGreekValue(metric, pathStats?.endpoint.value ?? 0)} · Min{' '}
+                    {formatGreekValue(metric, pathStats?.min.value ?? 0)} · Max{' '}
+                    {formatGreekValue(metric, pathStats?.max.value ?? 0)}
+                  </p>
+                </div>
+                <span>
+                  {pathModelLabel(debouncedPathConfig.model)} ·{' '}
+                  {debouncedPathConfig.ivMode === 'linear' ? 'Linear IV' : 'Constant IV'}
+                </span>
+              </div>
+              <div className="plot-frame path-profile-frame">
+                <Plot
+                  data={pathProfileData}
+                  layout={{
+                    autosize: true,
+                    margin: { l: 58, r: 16, t: 8, b: 42 },
+                    paper_bgcolor: 'rgba(0,0,0,0)',
+                    plot_bgcolor: 'rgba(0,0,0,0)',
+                    font: plotFont,
+                    xaxis: { ...axisStyle, title: { text: 'Days Forward' } },
+                    yaxis: { ...axisStyle, title: { text: metricLabels[metric] } },
+                    showlegend: false,
+                  }}
+                  config={{ displayModeBar: false, responsive: true }}
+                  useResizeHandler
+                  className="plot"
+                />
+              </div>
+              {grid.axisMode !== 'spot-time' ? (
+                <p className="model-note">
+                  3D and heatmap path overlays are shown on the Time surface.
+                </p>
+              ) : null}
+            </section>
+          ) : null}
           <section className="overview-section" aria-label="Greek overview board">
             <div className="overview-heading">
               <div>
@@ -1209,6 +1480,29 @@ function App() {
             <SummaryRow label="Charm / day" value={formatCompact(currentEvaluation.practical.charm)} />
             <SummaryRow label="Volga / 1 vol" value={formatMoney(currentEvaluation.practical.volga)} />
           </div>
+          {debouncedPathConfig.enabled && pathStats ? (
+            <>
+              <PanelTitle title="Path Scenario" />
+              <div className="summary-list">
+                <SummaryRow
+                  label="Model"
+                  value={pathModelLabel(debouncedPathConfig.model)}
+                />
+                <SummaryRow
+                  label="End Spot"
+                  value={pathStats.endpoint.point.spot.toFixed(2)}
+                />
+                <SummaryRow
+                  label="End ATM IV"
+                  value={formatPercent(pathStats.endpoint.point.atmIv)}
+                />
+                <SummaryRow
+                  label={`End ${metricLabels[metric]}`}
+                  value={formatGreekValue(metric, pathStats.endpoint.value)}
+                />
+              </div>
+            </>
+          ) : null}
           {compareEnabled ? (
             <>
               <PanelTitle title="Compare Greeks" />
@@ -1343,6 +1637,170 @@ function SegmentedControl<T extends string>({
         </button>
       ))}
     </div>
+  )
+}
+
+function PathScenarioControls({
+  config,
+  horizonMax,
+  onChange,
+  onReset,
+}: {
+  config: PricePathConfig
+  horizonMax: number
+  onChange: (patch: Partial<PricePathConfig>) => void
+  onReset: () => void
+}) {
+  return (
+    <>
+      <PanelTitle title="Path Scenario" />
+      <SegmentedControl
+        options={[
+          { value: 'off', label: 'Path Off' },
+          { value: 'on', label: 'Path On' },
+        ]}
+        value={config.enabled ? 'on' : 'off'}
+        onChange={(value) => onChange({ enabled: value === 'on' })}
+      />
+      <label className="field">
+        <span>Model</span>
+        <select
+          value={config.model}
+          onChange={(event) =>
+            onChange({ model: event.target.value as PathModelKind })
+          }
+        >
+          {pathModelOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="field-grid two">
+        <NumberField
+          label="Horizon"
+          value={config.horizonDays}
+          min={1}
+          max={horizonMax}
+          step={1}
+          onChange={(horizonDays) => onChange({ horizonDays })}
+        />
+        <NumberField
+          label="Steps"
+          value={config.steps}
+          min={1}
+          max={MAX_PATH_STEPS}
+          step={1}
+          onChange={(steps) => onChange({ steps })}
+        />
+        <NumberField
+          label="Seed"
+          value={config.seed}
+          min={1}
+          step={1}
+          onChange={(seed) => onChange({ seed })}
+        />
+        {config.model !== 'historical-bootstrap' ? (
+          <NumberField
+            label="Drift %"
+            value={config.drift * 100}
+            min={-100}
+            max={100}
+            step={0.25}
+            onChange={(driftPct) => onChange({ drift: driftPct / 100 })}
+          />
+        ) : null}
+        {config.model !== 'historical-bootstrap' ? (
+          <NumberField
+            label="Vol %"
+            value={config.volatility * 100}
+            min={0.1}
+            max={300}
+            step={0.25}
+            onChange={(volPct) => onChange({ volatility: volPct / 100 })}
+          />
+        ) : null}
+      </div>
+      {config.model === 'jump-diffusion' ? (
+        <div className="field-grid two">
+          <NumberField
+            label="Jump Lambda"
+            value={config.jumpIntensity}
+            min={0}
+            max={100}
+            step={0.25}
+            onChange={(jumpIntensity) => onChange({ jumpIntensity })}
+          />
+          <NumberField
+            label="Jump Mean %"
+            value={config.jumpMean * 100}
+            min={-100}
+            max={100}
+            step={0.25}
+            onChange={(jumpMeanPct) => onChange({ jumpMean: jumpMeanPct / 100 })}
+          />
+          <NumberField
+            label="Jump Vol %"
+            value={config.jumpVolatility * 100}
+            min={0}
+            max={300}
+            step={0.25}
+            onChange={(jumpVolPct) =>
+              onChange({ jumpVolatility: jumpVolPct / 100 })
+            }
+          />
+        </div>
+      ) : null}
+      {config.model === 'historical-bootstrap' ? (
+        <TextAreaField
+          label="Step Returns"
+          value={config.bootstrapReturns}
+          onChange={(bootstrapReturns) => onChange({ bootstrapReturns })}
+        />
+      ) : null}
+      <p className="control-label">IV Path</p>
+      <SegmentedControl
+        options={pathIvModeOptions}
+        value={config.ivMode}
+        onChange={(ivMode) => onChange({ ivMode })}
+      />
+      {config.ivMode === 'linear' ? (
+        <NumberField
+          label="Terminal IV %"
+          value={config.terminalIv * 100}
+          min={1}
+          max={300}
+          step={1}
+          onChange={(terminalIvPct) => onChange({ terminalIv: terminalIvPct / 100 })}
+        />
+      ) : null}
+      <button type="button" className="reset-legs" onClick={onReset}>
+        Reset path defaults
+      </button>
+    </>
+  )
+}
+
+function TextAreaField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <textarea
+        rows={3}
+        spellCheck={false}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
   )
 }
 
@@ -1734,10 +2192,59 @@ function formatMetricReadout(
 }
 
 function formatGreekValue(metric: GreekMetric, value: number): string {
-  if (metric === 'theta' || metric === 'vega' || metric === 'volga') {
+  if (
+    metric === 'price' ||
+    metric === 'pnl' ||
+    metric === 'theta' ||
+    metric === 'vega' ||
+    metric === 'volga'
+  ) {
     return formatMoney(value)
   }
   return formatCompact(value)
+}
+
+function pathModelLabel(model: PathModelKind): string {
+  return pathModelOptions.find((option) => option.value === model)?.label ?? model
+}
+
+function evaluatePathPoint(
+  legs: StrategyLeg[],
+  market: MarketParams,
+  point: PricePathPoint,
+  config: PricePathConfig,
+  volModel: VolModel,
+) {
+  return evaluateStrategy(
+    legs,
+    { ...market, spot: point.spot, iv: point.atmIv },
+    {
+      elapsedDays: point.elapsedDays,
+      volModel,
+      ...(config.ivMode === 'linear' ? { iv: point.atmIv } : {}),
+    },
+  )
+}
+
+function pathPointX(
+  point: PricePathPoint,
+  grid: ReturnType<typeof buildSurfaceGrid>,
+  market: MarketParams,
+): number {
+  if (grid.xAxisMode === 'log-moneyness') {
+    return logMoneyness(grid.referenceStrike, point.spot, market, market.dteDays)
+  }
+  return point.spot
+}
+
+function pathPointY(
+  point: PricePathPoint,
+  grid: ReturnType<typeof buildSurfaceGrid>,
+  market: MarketParams,
+): number {
+  if (grid.axisMode === 'spot-iv') return point.atmIv
+  if (grid.timeAxisKind === 'days-forward') return point.elapsedDays
+  return Math.max(market.dteDays - point.elapsedDays, MIN_DTE_DAYS)
 }
 
 function getInitialShareState(): AppShareState | null {

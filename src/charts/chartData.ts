@@ -9,6 +9,7 @@ export interface ZScaleResult {
   rawMax: number
   tickvals?: number[]
   ticktext?: string[]
+  transformValue: (value: number) => number
 }
 
 export const metricLabels: Record<GreekMetric, string> = {
@@ -54,8 +55,16 @@ export function scaleGridZ(
   clippingMode: ClippingMode,
 ): ZScaleResult {
   const values = grid.z.flat().filter(Number.isFinite)
+  const identity = (value: number) => value
   if (values.length === 0) {
-    return { z: grid.z, displayMin: 0, displayMax: 0, rawMin: 0, rawMax: 0 }
+    return {
+      z: grid.z,
+      displayMin: 0,
+      displayMax: 0,
+      rawMin: 0,
+      rawMax: 0,
+      transformValue: identity,
+    }
   }
 
   const rawMin = Math.min(...values)
@@ -67,6 +76,7 @@ export function scaleGridZ(
       displayMax: rawMax,
       rawMin,
       rawMax,
+      transformValue: identity,
     }
   }
 
@@ -90,24 +100,38 @@ export function scaleGridZ(
       rawMax,
       tickvals: tickSource.map(transform),
       ticktext: tickSource.map(formatScaleTick),
+      transformValue: transform,
     }
   }
 
   const displayMin = clippingMode === 'percentile' ? percentile(values, 0.02) : rawMin
   const displayMax = clippingMode === 'percentile' ? percentile(values, 0.98) : rawMax
   if (Math.abs(displayMax - displayMin) < 1e-12) {
-    return { z: grid.z, displayMin, displayMax, rawMin, rawMax }
+    return {
+      z: grid.z,
+      displayMin,
+      displayMax,
+      rawMin,
+      rawMax,
+      transformValue: identity,
+    }
   }
+
+  const transformValue =
+    clippingMode === 'percentile'
+      ? (value: number) => clamp(value, displayMin, displayMax)
+      : identity
 
   return {
     z:
       clippingMode === 'percentile'
-        ? grid.z.map((row) => row.map((value) => clamp(value, displayMin, displayMax)))
+        ? grid.z.map((row) => row.map(transformValue))
         : grid.z,
     displayMin,
     displayMax,
     rawMin,
     rawMax,
+    transformValue,
   }
 }
 

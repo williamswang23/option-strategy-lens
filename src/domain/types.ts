@@ -21,6 +21,8 @@ export type VolModelKind = 'flat' | 'linear-skew' | 'skew-smile'
 export type ScenarioKey = 'a' | 'b'
 export type CompareView = 'a' | 'b' | 'diff'
 export type TimeAxisKind = 'dte-remaining' | 'days-forward'
+export type PathModelKind = 'gbm' | 'jump-diffusion' | 'historical-bootstrap'
+export type PathIvMode = 'constant' | 'linear'
 
 export interface VolModel {
   kind: VolModelKind
@@ -34,6 +36,29 @@ export interface MarketParams {
   dividendYield: number
   iv: number
   dteDays: number
+}
+
+export interface PricePathConfig {
+  enabled: boolean
+  model: PathModelKind
+  horizonDays: number
+  steps: number
+  seed: number
+  drift: number
+  volatility: number
+  jumpIntensity: number
+  jumpMean: number
+  jumpVolatility: number
+  bootstrapReturns: string
+  ivMode: PathIvMode
+  terminalIv: number
+}
+
+export interface PricePathPoint {
+  step: number
+  elapsedDays: number
+  spot: number
+  atmIv: number
 }
 
 export interface OptionLeg {

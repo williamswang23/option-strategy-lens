@@ -218,13 +218,15 @@
 
 input,
 select,
+textarea,
 button {
   font: inherit;
   min-width: 0;
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid #334155;
@@ -233,6 +235,11 @@ select {
   color: #e5edf7;
   min-height: 38px;
   padding: 8px 10px;
+}
+
+textarea {
+  min-height: 82px;
+  resize: vertical;
 }
 
 input:disabled {
@@ -248,6 +255,7 @@ button:disabled {
 
 input:focus,
 select:focus,
+textarea:focus,
 button:focus-visible {
   outline: 2px solid rgba(56, 189, 248, 0.36);
   outline-offset: 2px;
@@ -406,6 +414,16 @@ button:focus-visible {
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid #253246;
+}
+
+.path-profile-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #253246;
+}
+
+.path-profile-frame {
+  height: 260px;
 }
 
 .overview-heading {
